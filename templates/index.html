@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Slide Generator</title>
+    
+    <style>
+        /* Reset and base styles */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            padding: 20px;
+        }
+
+        h1, h2 {
+            color: #6200ea;
+            margin-bottom: 20px;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            resize: vertical;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+
+        label {
+            font-size: 16px;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        button {
+            background-color: #6200ea;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s ease;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        button:hover {
+            background-color: #3700b3;
+        }
+
+        p {
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        a {
+            color: #6200ea;
+            text-decoration: none;
+            font-size: 16px;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        /* Log and Markdown display areas */
+        pre {
+            background-color: #ffffff;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            overflow-y: auto;
+            max-height: 200px;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+
+        /* Container to center content and constrain width */
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        #statusArea {
+            font-size: 14px; /* Reduced font size for status text */
+        }
+
+        /* Style for default markdown text */
+        .default-text {
+            color: #aaa;
+        }
+
+        /* Enhanced styles for markdownUsed and logsArea */
+        #markdownUsed {
+            background-color: #eef;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            overflow-y: auto;
+            max-height: 400px; /* Increased height */
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            white-space: pre-wrap; /* Preserve formatting */
+        }
+
+        #logsArea {
+            background-color: #f0f0f0;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            overflow-y: auto;
+            max-height: 400px; /* Increased height */
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            white-space: pre-wrap; /* Preserve formatting */
+        }
+
+        /* Style for timestampsArea */
+        #timestampsArea {
+            background-color: #eef;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            overflow-y: auto;
+            max-height: 400px; /* Increased height for better visibility */
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            white-space: pre-wrap; /* Preserve formatting */
+        }
+    </style>
+    
+    <script>
+    let currentSessionID = "";
+    let hasInteracted = false; // Initialize interaction flag
+
+    // Define default markdown content
+    const defaultMarkdown = `# How to Walk Your Dog
+
+### Slide 1: Sample Content Title Slide
+- **title:** How to Walk Your Dog
+- **subtitle:** A Fun Guide for Pet Owners
+- **presenter:** Rockstar Presenter
+- **date:** January 1, 20205
+
+### Slide 2: Content Slide
+- **text:** 
+  * Introduction to dog walking
+  * Benefits of regular walks
+  * Tips for leash training
+  * Fun dog-friendly routes`;
+
+    window.onload = function() {
+        const markdownInput = document.getElementById("markdownInput");
+        // Initialize textarea with default markdown and gray color
+        markdownInput.value = defaultMarkdown;
+        markdownInput.classList.add("default-text");
+
+        // Clear default text on focus and set interaction flag
+        markdownInput.addEventListener("focus", function() {
+            if (markdownInput.value === defaultMarkdown) {
+                markdownInput.value = "";
+                markdownInput.classList.remove("default-text");
+                hasInteracted = true;
+            }
+        });
+    };
+
+    function startJob() {
+        let markdownInput = document.getElementById("markdownInput").value;
+        const addNotes = document.getElementById("addNotes").checked;
+        const addImages = document.getElementById("addImages").checked;
+        const markdownFile = document.getElementById("markdownFile").files[0];
+
+        const formData = new FormData();
+        if (markdownFile) {
+            formData.append('markdown_file', markdownFile);
+        } else {
+            formData.append('markdown_input', markdownInput);
+        }
+        formData.append('add_notes', addNotes);
+        formData.append('add_images_stability', addImages);
+
+        // Record and display the start timestamp in timestampsArea
+        const startTime = new Date();
+        document.getElementById("timestampsArea").innerText += `[${startTime.toLocaleString()}] Job started.\n`;
+
+        document.getElementById("logsArea").innerText = ""; // Clear previous logs
+        document.getElementById("downloadLink").style.display = "none"; // Hide download link initially
+        document.getElementById("markdownUsed").innerText = ""; // Clear previous markdown content
+
+        fetch("/start_job", {
+            method: "POST",
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.error){
+                // Log error with timestamp
+                const errorTime = new Date();
+                document.getElementById("timestampsArea").innerText += `[${errorTime.toLocaleString()}] Error: ${data.error}\n`;
+            } else {
+                currentSessionID = data.session_id;
+                // Log job queued with timestamp
+                const queuedTime = new Date();
+                document.getElementById("timestampsArea").innerText += `[${queuedTime.toLocaleString()}] Job queued. Session ID: ${currentSessionID}\n`;
+
+                // Display the uploaded markdown content
+                if(data.markdown_input){
+                    document.getElementById("markdownUsed").innerText = data.markdown_input;
+                }
+
+                // Clear the text area and file input
+                document.getElementById("markdownInput").value = "";
+                document.getElementById("markdownFile").value = "";
+
+                // Reset interaction flag
+                hasInteracted = false;
+                pollStatus();
+                pollLogs();
+            }
+        });
+    }
+
+    function pollStatus(){
+        fetch("/status/" + currentSessionID)
+        .then(res => res.json())
+        .then(data => {
+            if(data.status === "running" || data.status === "queued"){
+                // Log running status with timestamp
+                const statusTime = new Date();
+                document.getElementById("timestampsArea").innerText += `[${statusTime.toLocaleString()}] Status: ${data.status}\n`;
+                setTimeout(pollStatus, 3000);
+            } else if(data.status === "complete") {
+                // Update download links
+                document.getElementById("downloadLink").href = `/download_file/${currentSessionID}`;
+                document.getElementById("downloadLink").innerText = `Download ${data.pptx_file}`;
+                document.getElementById("downloadLink").style.display = "block";
+
+                if(data.drive_file_id){
+                    // Show optional Drive link
+                    const driveMsg = document.getElementById("driveLink");
+                    driveMsg.href = "https://drive.google.com/file/d/" + data.drive_file_id + "/view";
+                    driveMsg.style.display = "inline";
+                }
+
+                // Log completion messages with timestamps in timestampsArea
+                const endTime = new Date();
+                document.getElementById("timestampsArea").innerText += `[${endTime.toLocaleString()}] Job completed.\n`;
+                document.getElementById("timestampsArea").innerText += `[${endTime.toLocaleString()}] Options - Add Notes: ${data.add_notes ? 'Yes' : 'No'}, Add Images: ${data.add_images_stability ? 'Yes' : 'No'}\n`;
+                document.getElementById("timestampsArea").innerText += `[${endTime.toLocaleString()}] File: ${data.pptx_file}\n`;
+
+                // Display total elapsed time
+                if(data.elapsed_time_formatted){
+                    document.getElementById("timestampsArea").innerText += `Total Workflow Time: ${data.elapsed_time_formatted}\n`;
+                }
+
+                // Updated line to remove "Used Markdown:" prefix
+                document.getElementById("markdownUsed").innerText = data.markdown_input;
+            } else if(data.status === "failed"){
+                // Log failure with timestamp
+                const failTime = new Date();
+                document.getElementById("timestampsArea").innerText += `[${failTime.toLocaleString()}] Job failed. Error: ${data.error}\n`;
+            } else {
+                // Log unknown status with timestamp
+                const unknownTime = new Date();
+                document.getElementById("timestampsArea").innerText += `[${unknownTime.toLocaleString()}] Unknown status.\n`;
+            }
+        });
+    }
+
+    function pollLogs(){
+        fetch("/logs/" + currentSessionID)
+        .then(res => res.json())
+        .then(data => {
+            if(data.logs){
+                const logsArea = document.getElementById("logsArea");
+                logsArea.innerText = data.logs.join('\n');
+                if(data.status === "complete" || data.status === "failed"){
+                    // Stop polling logs
+                    return;
+                }
+                setTimeout(pollLogs, 2000);
+            }
+        });
+    }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Markdown to Slides Web App</h1>
+        <textarea id="markdownInput" rows="15" cols="80" class="default-text"></textarea><br/>
+
+        <form id="uploadForm" enctype="multipart/form-data">
+            <label for="markdownFile">Upload Markdown File:</label>
+            <input type="file" id="markdownFile" name="markdown_file" accept=".md,.markdown" /><br/><br/>
+        </form>
+
+        <label><input type="checkbox" id="addNotes" /> Add Speaker Notes</label>
+        <label><input type="checkbox" id="addImages" /> Add Images</label><br/><br/>
+
+        <button onclick="startJob()">Generate PPTX</button>
+
+        <!-- Move download links right below the Generate PPTX button -->
+        <div id="downloadLinks" style="margin-bottom: 20px;">
+            <a id="downloadLink" href="#" style="display: none;"></a>
+            <a id="driveLink" href="#" style="display: none; margin-left: 1em;">Open in Drive</a>
+        </div>
+
+        <!-- Label for Workflow Progress -->
+        <p><strong>Workflow Progress:</strong></p>
+        <pre id="timestampsArea"></pre>
+
+        <!-- Label for Markdown Content -->
+        <p><strong>Markdown Content:</strong></p>
+        <pre id="markdownUsed" style="background-color: #eef; padding: 15px; border: 1px solid #ccc;"></pre>
+
+        <!-- Label for Logs Area -->
+        <p><strong>Logs:</strong></p>
+        <pre id="logsArea" style="background-color: #f0f0f0; padding: 15px; border: 1px solid #ccc;"></pre>
+    </div>
+</body>
+</html>
