@@ -352,6 +352,14 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+@app.route('/', methods=['GET'])
+def root():
+    return render_template('index.html')
+
+@app.route('/create', methods=['GET'])
+def create_page():
+    return render_template('index.html')
+
 if __name__ == '__main__':
     try:
         app.run(debug=True, port=5002)
