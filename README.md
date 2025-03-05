@@ -1,15 +1,27 @@
-# SlideUp: Markdown to PPTX Converter
+# SlideUp: Presentation Creation and Enhancement Tools
 
-SlideUp is an AI-powered tool that simplifies the process of creating professional presentations from markdown text. It combines the ease of markdown with the power of large language models to create visually appealing PowerPoint presentations with minimal effort.
+SlideUp is an AI-powered toolkit that offers two main functionalities:
+1. **Markdown to PPTX Converter**: Transform markdown text into professional PowerPoint presentations
+2. **PPTX Enhancement Tool**: Enhance existing PowerPoint files with AI-generated images and speaker notes
+
+Both tools leverage large language models to create visually appealing presentations with minimal effort.
 
 ## Features
 
+### Markdown to PPTX Converter
 - Convert markdown files directly to PowerPoint presentations
-- Enhance existing PowerPoint files with AI-generated images
-- Automatically generate speaker notes based on slide content
+- Automatically generate slide layouts based on content
+- Create structured presentations with proper formatting
+
+### PPTX Enhancement Tool
+- Add AI-generated images to existing PowerPoint slides
+- Generate speaker notes based on slide content
 - Create abstract, business-appropriate illustrations for each slide
+
+### Common Features
 - Simple web interface for both creation and enhancement workflows
 - Customizable prompts for image generation and speaker notes
+- API integration with multiple AI providers
 
 ## Installation
 
@@ -58,6 +70,8 @@ Alternatively, you can enter the API keys directly into the web interface, which
 
 ## Usage
 
+### Markdown to PPTX Converter
+
 1. Prepare Your Markdown File
 
 Create a markdown file (`.md`) with the content for your presentation. Use the following structure:
@@ -100,7 +114,7 @@ python webapp.py
 
 This will start the server on `http://127.0.0.1:5003/`.
 
-3. Use the Web Interface
+3. Use the Markdown to PPTX Interface
 
 1.  Open `http://127.0.0.1:5003/index3` in your web browser.
 2.  Enter your API keys (optional, if not set as environment variables).
@@ -109,17 +123,51 @@ This will start the server on `http://127.0.0.1:5003/`.
 5.  Monitor the job status and logs in the interface.
 6.  Once the job is complete, a download button will appear. Click it to download your enhanced PPTX file.
 
-4. Command Line Usage (Alternative)
+### PPTX Enhancement Tool
 
-You can also run the script directly from the command line:
+1. Prepare Your PowerPoint File
 
+For best results with the enhancement tool, follow these guidelines:
+
+- Keep slide content concise and clear
+- Use descriptive titles that convey the main point of the slide
+- Organize content with bullet points and clear hierarchy
+- Avoid overly complex layouts or custom designs
+- Include sufficient text content for the AI to understand the context
+
+2. Use the PPTX Enhancement Interface
+
+1.  Open `http://127.0.0.1:5003/` in your web browser.
+2.  Enter your API keys (optional, if not set as environment variables).
+3.  Upload your existing PowerPoint file.
+4.  Select enhancement options (add images, add speaker notes).
+5.  Click "Upload & Enhance".
+6.  Monitor the job status and logs in the interface.
+7.  Once complete, download your enhanced presentation.
+
+### Tips for Effective PPTX Enhancement
+
+- **Text Content**: Ensure slides have sufficient text for AI to understand the topic
+- **Slide Organization**: Consistent layouts work best
+- **Image Generation**: Simple, abstract concepts generate better illustrations
+- **Speaker Notes**: More detailed slide content leads to better speaker notes
+- **Titles**: Clear, descriptive titles help generate relevant enhancements
+- **Processing Time**: Complex presentations take longer to enhance
+- **Results Variation**: AI-generated content may vary in quality between slides
+
+### Command Line Usage (Alternative)
+
+You can also run the scripts directly from the command line:
+
+For markdown to PPTX conversion:
 ```bash
 python md2pptx.py <markdown_file> [--add-notes] [--add-images-stability]
 ```
 
--   `<markdown_file>`: Path to your markdown file.
--   `--add-notes`: (Optional) Add speaker notes to the presentation (requires OpenAI API key).
--   `--add-images-stability`: (Optional) Add images to the presentation (requires Stability AI and DeepSeek API keys).
+For enhancing existing PPTX:
+```bash
+python enhance_pptx.py <pptx_file> [--add-notes] [--add-images-stability]
+```
 
 Example:
 
@@ -127,15 +175,13 @@ Example:
 python md2pptx.py my_presentation.md --add-notes --add-images-stability
 ```
 
-The generated PPTX file will be saved in the `generated_files` directory.
-
-5. Clean Up
-
-To remove temporary files, you can manually delete the `generated_files` directory or rely on the automatic cleanup that occurs on normal exit (e.g., when pressing Ctrl+C).
+The generated or enhanced PPTX files will be saved in the `generated_files` directory.
 
 ## Troubleshooting
 
 -   **API Keys**: Ensure your API keys are valid and have sufficient credits.
 -   **Dependencies**: Make sure all dependencies are installed correctly.
--   **File Format**: Verify your markdown file is correctly formatted.
+-   **File Format**: Verify your files are correctly formatted.
 -   **Network**: Check your network connection if you encounter issues with API calls.
+-   **Image Generation Failures**: If image generation fails, try with simpler slide content or different AI providers.
+-   **Speaker Notes Inconsistency**: Speaker notes quality depends on the clarity and context of slide content.
