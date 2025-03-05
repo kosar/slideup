@@ -11,7 +11,7 @@ import shutil
 import openai
 if hasattr(openai, "errors") and not hasattr(openai, "error"):
     openai.error = openai.errors
-# ...existing code imports if needed...
+from env_utils import check_env_keys, store_original_env, restore_env
 
 app = Flask(__name__, template_folder='templates')
 
@@ -43,6 +43,11 @@ def shutdown_handler(signal_received, frame):
 
 signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
+
+@app.route('/env_keys_check', methods=['GET'])
+def env_keys_check():
+    """Return a JSON object indicating which API keys are set in environment variables."""
+    return check_env_keys()
 
 @app.route('/index3', methods=['GET'])
 def index3():
@@ -179,26 +184,68 @@ def index3():
                 color: #666;
                 margin-top: 0.5em;
             }
+            .env-key-status {
+                font-size: 11px;
+                color: #666;
+                margin-left: 5px;
+            }
+            .api-keys-section {
+                background-color: #f8f8f8;
+                border: 1px solid #e0e0e0;
+                padding: 15px;
+                border-radius: 5px;
+                margin-bottom: 20px;
+            }
+            
+            .api-keys-section h3 {
+                margin-top: 0;
+                margin-bottom: 10px;
+                color: #5563DE;
+            }
+            
+            .help-text {
+                font-size: 12px;
+                color: #666;
+                margin-top: 8px;
+                margin-bottom: 15px;
+            }
         </style>
     </head>
     <body>
         <div class="card">
             <h1>Enhance PPTX File (Index 3)</h1>
             <form id="uploadForm" enctype="multipart/form-data">
-                <label>OpenAI API Key (optional):</label>
-                <input type="text" name="OPENAI_API_KEY" id="OPENAI_API_KEY">
-                <label>Stability API Key (optional):</label>
-                <input type="text" name="STABILITY_API_KEY" id="STABILITY_API_KEY">
-                <label>Deepseek API Key (optional):</label>
-                <input type="text" name="DEEPSEEK_API_KEY" id="DEEPSEEK_API_KEY" placeholder="temporarily offline">
                 <label>Select PPTX File:</label>
                 <input type="file" name="pptx_file">
                 
-                <!-- Advanced settings section with image prompt -->
+                <!-- Advanced settings section with API keys and prompts -->
                 <div class="advanced-settings">
                     <div id="advancedToggle" class="advanced-toggle collapsed">Advanced Settings</div>
                     <div id="advancedContent" class="advanced-content">
-                        <label for="stabilityPrompt">Image Generation Prompt:</label>
+                        <!-- API Keys Section -->
+                        <div class="api-keys-section">
+                            <h3>API Keys</h3>
+                            <div class="api-key-fields">
+                                <label for="OPENAI_API_KEY">OpenAI API Key: 
+                                    <span id="openaiEnvKeyStatus" class="env-key-status"></span>
+                                </label>
+                                <input type="password" name="OPENAI_API_KEY" id="OPENAI_API_KEY" placeholder="sk-..." style="width: 100%;">
+                                
+                                <label for="STABILITY_API_KEY">Stability API Key:
+                                    <span id="stabilityEnvKeyStatus" class="env-key-status"></span>
+                                </label>
+                                <input type="password" name="STABILITY_API_KEY" id="STABILITY_API_KEY" placeholder="sk-..." style="width: 100%;">
+                                
+                                <label for="DEEPSEEK_API_KEY">DeepSeek API Key:
+                                    <span id="deepseekEnvKeyStatus" class="env-key-status"></span>
+                                </label>
+                                <input type="password" name="DEEPSEEK_API_KEY" id="DEEPSEEK_API_KEY" placeholder="sk-..." style="width: 100%;">
+                                
+                                <p class="help-text">API keys are saved in your browser. If provided, these override server keys.</p>
+                            </div>
+                        </div>
+                        
+                        <label for="stability_prompt">Image Generation Prompt:</label>
                         <textarea name="stability_prompt" id="stability_prompt" rows="6">Create a conceptual visualization of an abstract concept representing: {concept} STYLE: Abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content. Explore color symbolism and metaphorical representations. Avoid realistic objects or scenes. Focus on conveying the underlying ideas. DO NOT include text, numbers, or literal interpretations. Only abstract visual elements. BLUR TEXT in your images if generated. COMPOSITION: Create a balanced, harmonious composition.</textarea>
                         <p class="help-text">This prompt template is used for generating images for your slides. You can customize it to match your preferred visual style.</p>
                         
@@ -223,19 +270,24 @@ def index3():
             <button class="download-button" id="downloadButton" style="display: none;">Download Enhanced PPTX</button>
         </div>
         <script>
-        // On page load, restore API keys if available
+        // On page load, restore API keys if available and check server keys
         window.onload = function() {
             const openaiField = document.getElementById('OPENAI_API_KEY');
             const stabilityField = document.getElementById('STABILITY_API_KEY');
             const deepseekField = document.getElementById('DEEPSEEK_API_KEY');
-            if (sessionStorage.getItem('OPENAI_API_KEY')) {
-                openaiField.value = sessionStorage.getItem('OPENAI_API_KEY');
+            
+            // Check server environment variables
+            checkServerKeys();
+            
+            // Restore from localStorage
+            if (localStorage.getItem('openaiApiKey')) {
+                openaiField.value = localStorage.getItem('openaiApiKey');
             }
-            if (sessionStorage.getItem('STABILITY_API_KEY')) {
-                stabilityField.value = sessionStorage.getItem('STABILITY_API_KEY');
+            if (localStorage.getItem('stabilityApiKey')) {
+                stabilityField.value = localStorage.getItem('stabilityApiKey');
             }
-            if (sessionStorage.getItem('DEEPSEEK_API_KEY')) {
-                deepseekField.value = sessionStorage.getItem('DEEPSEEK_API_KEY');
+            if (localStorage.getItem('deepseekApiKey')) {
+                deepseekField.value = localStorage.getItem('deepseekApiKey');
             }
             
             // Set up the advanced settings toggle
@@ -246,16 +298,33 @@ def index3():
                 this.classList.toggle('collapsed', !isVisible);
             });
         };
+        
+        // Check if server has environment variables set
+        async function checkServerKeys() {
+            try {
+                const response = await fetch('/env_keys_check');
+                const data = await response.json();
+                
+                document.getElementById('openaiEnvKeyStatus').innerHTML = 
+                    data.openai_key_set ? '<small>(Server key available)</small>' : '';
+                document.getElementById('stabilityEnvKeyStatus').innerHTML = 
+                    data.stability_key_set ? '<small>(Server key available)</small>' : '';
+                document.getElementById('deepseekEnvKeyStatus').innerHTML = 
+                    data.deepseek_key_set ? '<small>(Server key available)</small>' : '';
+            } catch (e) {
+                console.error("Failed to check server API keys:", e);
+            }
+        }
 
         // Save API keys whenever their value changes
         document.getElementById('OPENAI_API_KEY').addEventListener('input', function() {
-            sessionStorage.setItem('OPENAI_API_KEY', this.value);
+            localStorage.setItem('openaiApiKey', this.value);
         });
         document.getElementById('STABILITY_API_KEY').addEventListener('input', function() {
-            sessionStorage.setItem('STABILITY_API_KEY', this.value);
+            localStorage.setItem('stabilityApiKey', this.value);
         });
         document.getElementById('DEEPSEEK_API_KEY').addEventListener('input', function() {
-            sessionStorage.setItem('DEEPSEEK_API_KEY', this.value);
+            localStorage.setItem('deepseekApiKey', this.value);
         });
 
         const form = document.getElementById('uploadForm');
@@ -344,6 +413,9 @@ def upload_pptx3():
     Receive the PPTX file, store optional API keys, and start the enhancement process.
     Return a JSON response with a session_id for tracking.
     """
+    # Store original environment variables
+    original_env = store_original_env()
+
     # Optional: override environment variables if form fields are set
     openai_key = request.form.get('OPENAI_API_KEY', '')
     stability_key = request.form.get('STABILITY_API_KEY', '')
@@ -359,6 +431,8 @@ def upload_pptx3():
         os.environ['DEEPSEEK_API_KEY'] = deepseek_key
 
     if 'pptx_file' not in request.files or request.files['pptx_file'].filename == '':
+        # Restore original environment variables before returning
+        restore_env(original_env)
         return jsonify({"error": "No PPTX file provided"}), 400
 
     pptx_file = request.files['pptx_file']
@@ -373,7 +447,8 @@ def upload_pptx3():
         "output_file": "",
         "elapsed_time": 0,
         "stability_prompt": stability_prompt,  # Store the custom stability prompt
-        "deepseek_prompt": deepseek_prompt    # Store the custom deepseek prompt
+        "deepseek_prompt": deepseek_prompt,    # Store the custom deepseek prompt
+        "original_env": original_env          # Store original environment variables
     }
     jobs[session_id]['orig_filename'] = filename  # store original filename
 
@@ -389,17 +464,17 @@ def upload_pptx3():
     return jsonify({"session_id": session_id})
 
 def enhance_pptx_thread(session_id):
-    jobs[session_id]['status'] = "running"
-    jobs[session_id]['start_time'] = time.time()
-
-    saved_path = jobs[session_id]['file_path']
-    orig_filename = jobs[session_id]['orig_filename']
-    filename_base, _ = os.path.splitext(orig_filename)
-    output_file = os.path.join(GENERATED_FILES_DIR, f"{filename_base}_enhanced.pptx")
-    jobs[session_id]['output_file'] = output_file
-    stability_prompt = jobs[session_id].get('stability_prompt', None)  # Get the custom prompt
-
     try:
+        jobs[session_id]['status'] = "running"
+        jobs[session_id]['start_time'] = time.time()
+
+        saved_path = jobs[session_id]['file_path']
+        orig_filename = jobs[session_id]['orig_filename']
+        filename_base, _ = os.path.splitext(orig_filename)
+        output_file = os.path.join(GENERATED_FILES_DIR, f"{filename_base}_enhanced.pptx")
+        jobs[session_id]['output_file'] = output_file
+        stability_prompt = jobs[session_id].get('stability_prompt', None)  # Get the custom prompt
+
         logs = jobs[session_id]['logs']
         logs.append("=== Enhancement Process Starting ===")
         logs.append("Enhancement in progress. Please wait...")
@@ -413,6 +488,7 @@ def enhance_pptx_thread(session_id):
         logs.append("=== Enhancement Process Completed ===")
         logs.append(f"Total Execution Time: {total_time:.2f} seconds")
         jobs[session_id]['status'] = "complete"
+        
     except Exception as e:
         import traceback
         debug_info = traceback.format_exc()
@@ -420,6 +496,12 @@ def enhance_pptx_thread(session_id):
         logs.append("Error during enhancement: " + str(e))
         logs.append("Debug info: " + debug_info)
         jobs[session_id]['status'] = "failed"
+    finally:
+        # Restore original environment variables
+        if 'original_env' in jobs[session_id]:
+            restore_env(jobs[session_id]['original_env'])
+            # Remove sensitive data
+            del jobs[session_id]['original_env']
 
     jobs[session_id]['end_time'] = time.time()
     jobs[session_id]['elapsed_time'] = jobs[session_id]['end_time'] - jobs[session_id]['start_time']

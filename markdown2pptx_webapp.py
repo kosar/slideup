@@ -17,6 +17,7 @@ import md2pptx  # Our existing module
 # ...existing code...
 
 from werkzeug.utils import secure_filename  # Add import for secure filename handling
+from env_utils import check_env_keys, store_original_env, restore_env
 
 app = Flask(__name__, template_folder='templates')
 
@@ -136,14 +137,41 @@ def generate_pptx(uploaded_filename, markdown_text, session_id, add_notes, add_i
         job_status[session_id]['output_filename'] = output_filename  # Added line
         log(f"Session {session_id} finished with output {output_filename}.")
 
+        # At the end, ensure we restore original environment variables
+        if session_id in job_status and 'original_env' in job_status[session_id]:
+            original_env = job_status[session_id]['original_env']
+            for key, value in original_env.items():
+                os.environ[key] = value
+            # Remove sensitive data from session
+            del job_status[session_id]['original_env']
+
     except Exception as e:
+        # Restore environment variables even on error
+        if session_id in job_status and 'original_env' in job_status[session_id]:
+            original_env = job_status[session_id]['original_env']
+            for key, value in original_env.items():
+                os.environ[key] = value
+            # Remove sensitive data from session
+            del job_status[session_id]['original_env']
+            
         log(f"Error in generate_pptx: {e}")
         job_status[session_id]['status'] = 'failed'
         job_status[session_id]['error'] = str(e)
+    finally:
+        # Always restore environment variables
+        if session_id in job_status and 'original_env' in job_status[session_id]:
+            restore_env(job_status[session_id]['original_env'])
+            # Remove sensitive data from session
+            del job_status[session_id]['original_env']
 
 @app.route('/index', methods=['GET'])
 def index():
     return render_template('index.html')
+
+@app.route('/env_keys_check', methods=['GET'])
+def env_keys_check():
+    """Return a JSON object indicating which API keys are set in environment variables."""
+    return check_env_keys()
 
 @app.route('/start_job', methods=['POST'])
 def start_job():
@@ -161,6 +189,22 @@ def start_job():
         "add_notes": False,    # Will be updated later
         "add_images_stability": False  # Will be updated later
     }
+
+    # Get API keys from the request and temporarily override environment variables
+    openai_api_key = request.form.get('openaiApiKey', '')
+    stability_api_key = request.form.get('stabilityApiKey', '')
+    deepseek_api_key = request.form.get('deepseekApiKey', '')
+    
+    # Store original environment variables
+    original_env = store_original_env()
+    
+    # Override with user-provided keys if available
+    if openai_api_key:
+        os.environ['OPENAI_API_KEY'] = openai_api_key
+    if stability_api_key:
+        os.environ['STABILITY_API_KEY'] = stability_api_key
+    if deepseek_api_key:
+        os.environ['DEEPSEEK_API_KEY'] = deepseek_api_key
 
     if 'markdown_file' in request.files and request.files['markdown_file'].filename != '':
         # Handle file upload
@@ -205,11 +249,16 @@ def start_job():
     job_status[session_id]['stability_prompt'] = stability_prompt
     job_status[session_id]['deepseek_prompt'] = deepseek_prompt
     job_status[session_id]['speaker_notes_prompt'] = speaker_notes_prompt
+    # Store API keys for this session (be cautious with logs)
+    job_status[session_id]['has_custom_api_keys'] = bool(openai_api_key or stability_api_key or deepseek_api_key)
 
     if not markdown_input.strip():
+        # Restore original environment variables
+        restore_env(original_env)
         return jsonify({"error": "No Markdown text provided"}), 400
 
     job_status[session_id]['logs'].append("Job queued.")
+    job_status[session_id]['original_env'] = original_env  # Store to restore later
 
     # Pass the custom prompts to the generate_pptx function
     t = threading.Thread(target=generate_pptx, args=(user_uploaded_filename, markdown_input, session_id, 
