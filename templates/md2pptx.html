@@ -271,18 +271,18 @@
         if (localStorage.getItem('deepseekApiKey')) {
             document.getElementById('deepseekApiKey').value = localStorage.getItem('deepseekApiKey');
         }
+        
+        // Save API keys to localStorage when they change - moved inside window.onload
+        document.getElementById('openaiApiKey').addEventListener('input', function() {
+            localStorage.setItem('openaiApiKey', this.value);
+        });
+        document.getElementById('stabilityApiKey').addEventListener('input', function() {
+            localStorage.setItem('stabilityApiKey', this.value);
+        });
+        document.getElementById('deepseekApiKey').addEventListener('input', function() {
+            localStorage.setItem('deepseekApiKey', this.value);
+        });
     };
-
-    // Save API keys to localStorage when they change
-    document.getElementById('openaiApiKey').addEventListener('input', function() {
-        localStorage.setItem('openaiApiKey', this.value);
-    });
-    document.getElementById('stabilityApiKey').addEventListener('input', function() {
-        localStorage.setItem('stabilityApiKey', this.value);
-    });
-    document.getElementById('deepseekApiKey').addEventListener('input', function() {
-        localStorage.setItem('deepseekApiKey', this.value);
-    });
 
     // Check if server has environment variables set
     async function checkServerKeys() {
