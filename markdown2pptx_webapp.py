@@ -11,10 +11,7 @@ import signal    # Import signal for handling termination
 import sys       # Import sys to exit the program properly
 import threading  # Import threading for lock management
 import errno  # Import errno for error handling
-
-# ...existing code...
 import md2pptx  # Our existing module
-# ...existing code...
 
 from werkzeug.utils import secure_filename  # Add import for secure filename handling
 from env_utils import check_env_keys, store_original_env, restore_env
@@ -354,14 +351,13 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 @app.route('/', methods=['GET'])
 def root():
-    return render_template('index.html')
-
-@app.route('/create', methods=['GET'])
-def create_page():
-    return render_template('index.html')
+    return render_template('md2pptx.html')
 
 if __name__ == '__main__':
     try:
+        # generate the appName variable from the name of this file sans extension and convert to title case
+        appName = os.path.splitext(os.path.basename(__file__))[0].replace('_', ' ').title()
+        print ('Running', appName, 'http://localhost:5002/')
         app.run(debug=True, port=5002)
     except:
         cleanup_generated_files()
