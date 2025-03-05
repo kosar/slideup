@@ -64,7 +64,12 @@ SlideUp can do even *more* if you give it special keys called "API keys". These 
 
 There are two ways to set the API keys:
 
-*   **Option 1: Using the Web Interface (Easiest):** When you use SlideUp in your web browser, you can just paste the keys into the boxes on the page. SlideUp will remember them temporarily.
+*   **Option 1: Using the Web Interface (Easiest):** 
+    * When you use SlideUp in your web browser, you can paste the keys into the fields in the "Advanced Settings" section.
+    * Click on "Advanced Settings" to expand this section.
+    * Your keys will be saved in your browser's storage, so you only need to enter them once.
+    * You'll see a small indicator next to each field if a key is already set on the server.
+
 *   **Option 2: Using the Terminal (More Permanent):**
     1.  Copy and paste these commands into your Terminal, replacing `"YOUR_API_KEY"` with your actual keys:
 
@@ -119,43 +124,73 @@ Okay, time to make some slides!
 3.  **Start SlideUp:** Copy and paste this command into the Terminal and press `Enter`:
 
     ```bash
-    python webapp.py
+    python markdown2pptx_webapp.py  # For creating presentations from markdown
+    ```
+    
+    Or if you want to enhance existing presentations:
+    
+    ```bash
+    python pptx_enhancement_webapp.py  # For enhancing existing PPTX files
     ```
 
     *   **What's happening?** This command starts the SlideUp program.
 
-4.  **Open your web browser:** SlideUp will tell you the address to go to (usually `http://127.0.0.1:5002/` or `http://127.0.0.1:5003/`). Type that address into your browser's address bar and press `Enter`.
+4.  **Open your web browser:** SlideUp will tell you the address to go to (usually `http://127.0.0.1:5002/` for Markdown or `http://127.0.0.1:5003/` for PPTX enhancement). Type that address into your browser's address bar and press `Enter`.
 
 ### 5. Make Your Presentation! ✨
 
 1.  **You'll see the SlideUp webpage.**
-2.  **Enter your API keys** (if you have them) in the boxes.
-3.  **Choose your Markdown file:** Click the "Choose File" button and select your `.md` file.
-4.  **Check the boxes:** If you want speaker notes and images, check the "Add Speaker Notes" and "Add Images" boxes.
-5.  **Click "Generate PPTX":** Let SlideUp do its thing!
+2.  **Choose your input file:** 
+    * For Markdown: Enter your presentation outline in the text box or click "Upload Markdown File"
+    * For PPTX Enhancement: Click "Select PPTX File" to choose an existing PowerPoint file
+3.  **Check the boxes:** If you want speaker notes and images, check the "Add Speaker Notes" and "Add Images" boxes (Markdown version only).
+4.  **Advanced customization (optional):**
+    * Click the "Advanced Settings" dropdown to reveal more options
+    * Enter your API keys if needed (they'll be saved for future use)
+    * Customize the prompts used for image generation and speaker notes if desired
+5.  **Click "Generate PPTX" or "Upload & Enhance":** Let SlideUp do its thing!
 6.  **Watch the progress:** The page will show you what's happening.
 7.  **Download your presentation:** When it's done, a "Download" link will appear. Click it to download your beautiful new PowerPoint presentation!
 
+## Customizing Your Slides 🎨
+
+SlideUp now offers advanced customization options:
+
+* **Image Generation Prompt:** Control how AI generates images for your slides
+* **DeepSeek Prompt Engineer Instructions:** Fine-tune how concepts are translated into image prompts
+* **Speaker Notes Generation Prompt:** Customize how speaker notes are written
+
+To access these options:
+
+1. Click the "Advanced Settings" dropdown
+2. Edit the text in each box to match your preferred style
+3. Generate your presentation as usual
+
+Your customizations will make each generated presentation fit your exact needs!
+
 ## Troubleshooting 🛠️
 
-*   **"I get an error when I run `python webapp.py`!"**
+*   **"I get an error when I run the web app!"**
     *   Make sure you've followed all the steps in "Installing SlideUp" correctly.
-    *   Double-check that you're in the right folder in the Terminal (use the `cd` command).
-    *   If you still have problems, try searching the error message online or ask a techy friend for help.
+    *   Double-check that you're in the right folder in the Terminal.
+    *   Verify that you're using the correct python command (e.g., `python3` vs `python`).
 *   **"My presentation doesn't have speaker notes or images!"**
-    *   Make sure you've entered your API keys correctly.
-    *   Check the "Add Speaker Notes" and "Add Images" boxes before generating the presentation.
-    *   If you're using the Terminal to set your API keys, make sure you've added them to your `.bashrc` or `.zshrc` file (or that you're setting them in each new Terminal session).
-*   **"The images look weird!"**
-    *   SlideUp uses AI to generate images, and sometimes it doesn't get it quite right. Try tweaking your slide titles or bullet points to give the AI better hints.
+    *   Make sure you've entered your API keys correctly in Advanced Settings.
+    *   Check the "Add Speaker Notes" and "Add Images" boxes before generating.
+    *   Look at the logs area on the page for any error messages.
+*   **"The images look weird or don't match my content!"**
+    *   Try customizing the image generation prompt in Advanced Settings.
+    *   Provide more detailed bullet points on your slides to guide the AI.
 *   **"SlideUp is taking a long time!"**
     *   Generating speaker notes and images can take a few minutes, especially if the servers are busy. Be patient!
+    *   Watch the Workflow Progress area for updates on what's happening.
 
 ## Advanced Tips & Tricks 🤓
 
-*   **Customize your slides:** SlideUp creates a basic presentation, but you can always open it in PowerPoint and add your own personal touches.
-*   **Experiment with your outlines:** The better your outline, the better your presentation will be. Try different ways of organizing your ideas.
-*   **Contribute to SlideUp:** If you're a techy person, you can help make SlideUp even better! Check out the code and contribute your ideas.
+*   **Reuse API keys:** Once entered, your API keys will be saved in your browser for future sessions.
+*   **Experiment with different prompts:** Try different wording in the Advanced Settings to get different styles of images and speaker notes.
+*   **Server keys:** If you see "(Server key available)" next to an API key field, it means that key is already set on the server and you don't need to enter it again.
+*   **Customize post-generation:** SlideUp creates a basic presentation, but you can always open it in PowerPoint and add your own personal touches.
 
 ## Have Fun! 🎉
 
