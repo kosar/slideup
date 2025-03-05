@@ -73,7 +73,8 @@ def is_text(content):
     except UnicodeEncodeError:
         return False
 
-def generate_pptx(uploaded_filename, markdown_text, session_id, add_notes, add_images_stability, stability_prompt, speaker_notes_prompt):
+def generate_pptx(uploaded_filename, markdown_text, session_id, add_notes, add_images_stability, 
+                 stability_prompt, speaker_notes_prompt, deepseek_prompt=None):
     """Run the generation and store the result for user to download."""
     try:
         # Mark job as running
@@ -111,7 +112,8 @@ def generate_pptx(uploaded_filename, markdown_text, session_id, add_notes, add_i
             "--add-notes" if add_notes else "",
             "--add-images-stability" if add_images_stability else "",
             "--stability-prompt", stability_prompt if stability_prompt else "",
-            "--speaker-notes-prompt", speaker_notes_prompt if speaker_notes_prompt else ""
+            "--speaker-notes-prompt", speaker_notes_prompt if speaker_notes_prompt else "",
+            "--deepseek-prompt", deepseek_prompt if deepseek_prompt else ""
         ], alt_output=output_filepath)
 
         log(f"PPTX file generated at {output_filepath}.")
@@ -190,20 +192,29 @@ def start_job():
 
     add_notes = request.form.get('add_notes') == 'true'
     add_images = request.form.get('add_images_stability') == 'true'
+    
+    # Get the custom prompts from the form
+    stability_prompt = request.form.get('stabilityPrompt', '')
+    deepseek_prompt = request.form.get('deepseekPrompt', '')
+    speaker_notes_prompt = request.form.get('speakerNotesPrompt', '')
 
     # Update the initialized job_status entry with actual data
     job_status[session_id]['markdown_input'] = markdown_input
     job_status[session_id]['add_notes'] = add_notes
     job_status[session_id]['add_images_stability'] = add_images
+    job_status[session_id]['stability_prompt'] = stability_prompt
+    job_status[session_id]['deepseek_prompt'] = deepseek_prompt
+    job_status[session_id]['speaker_notes_prompt'] = speaker_notes_prompt
 
     if not markdown_input.strip():
         return jsonify({"error": "No Markdown text provided"}), 400
 
     job_status[session_id]['logs'].append("Job queued.")
 
-    stability_prompt = request.form.get('stabilityPrompt', '')
-    speaker_notes_prompt = request.form.get('speakerNotesPrompt', '')
-    t = threading.Thread(target=generate_pptx, args=(user_uploaded_filename, markdown_input, session_id, add_notes, add_images, stability_prompt, speaker_notes_prompt))
+    # Pass the custom prompts to the generate_pptx function
+    t = threading.Thread(target=generate_pptx, args=(user_uploaded_filename, markdown_input, session_id, 
+                                                    add_notes, add_images, stability_prompt, 
+                                                    speaker_notes_prompt, deepseek_prompt))
     t.start()
 
     return jsonify({

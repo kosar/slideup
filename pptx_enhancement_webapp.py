@@ -94,6 +94,16 @@ def index3():
                 border: 1px solid #ccc;
                 border-radius: 4px;
             }
+            textarea {
+                width: 100%;
+                margin-top: 0.5em;
+                padding: 0.7em;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                min-height: 80px;
+                font-family: 'Roboto', sans-serif;
+                font-size: 14px;
+            }
             button {
                 margin-top: 1em;
                 width: 100%;
@@ -139,6 +149,36 @@ def index3():
                 opacity: 0.5;
                 cursor: not-allowed;
             }
+            /* Advanced settings styling */
+            .advanced-settings {
+                margin-top: 1em;
+                border-top: 1px solid #eee;
+                padding-top: 1em;
+            }
+            .advanced-toggle {
+                color: #5563DE;
+                cursor: pointer;
+                font-weight: 500;
+                display: flex;
+                align-items: center;
+            }
+            .advanced-toggle::after {
+                content: "▼";
+                margin-left: 5px;
+                transition: transform 0.3s;
+            }
+            .advanced-toggle.collapsed::after {
+                transform: rotate(-90deg);
+            }
+            .advanced-content {
+                padding: 1em 0;
+                display: none;
+            }
+            .help-text {
+                font-size: 12px;
+                color: #666;
+                margin-top: 0.5em;
+            }
         </style>
     </head>
     <body>
@@ -153,6 +193,29 @@ def index3():
                 <input type="text" name="DEEPSEEK_API_KEY" id="DEEPSEEK_API_KEY" placeholder="temporarily offline">
                 <label>Select PPTX File:</label>
                 <input type="file" name="pptx_file">
+                
+                <!-- Advanced settings section with image prompt -->
+                <div class="advanced-settings">
+                    <div id="advancedToggle" class="advanced-toggle collapsed">Advanced Settings</div>
+                    <div id="advancedContent" class="advanced-content">
+                        <label for="stabilityPrompt">Image Generation Prompt:</label>
+                        <textarea name="stability_prompt" id="stability_prompt" rows="6">Create a conceptual visualization of an abstract concept representing: {concept} STYLE: Abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content. Explore color symbolism and metaphorical representations. Avoid realistic objects or scenes. Focus on conveying the underlying ideas. DO NOT include text, numbers, or literal interpretations. Only abstract visual elements. BLUR TEXT in your images if generated. COMPOSITION: Create a balanced, harmonious composition.</textarea>
+                        <p class="help-text">This prompt template is used for generating images for your slides. You can customize it to match your preferred visual style.</p>
+                        
+                        <label for="deepseek_prompt">DeepSeek Prompt Engineer Instructions:</label>
+                        <textarea name="deepseek_prompt" id="deepseek_prompt" rows="6">You are a creative prompt engineer for AI image generation. Create VISUAL, ABSTRACT prompts for business concepts based on the content provided as context, with these rules:
+1. Focus on symbolic representations, not literal
+2. Use vivid color combinations and abstract shapes
+3. Incorporate dynamic compositions
+4. Reference artistic styles that resonate with a business audience to complement words with visuals
+5. Keep under 500 words
+6. STYLE: Abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content.
+7. NO WORDS should be in the image unless they are well understood and spelled correctly. Emphasizes abstract visual elements. BLUR TEXT in your images if generated. When conveying scientific concepts, use metaphorical representations.
+8. COMPOSITION: Create a balanced, harmonious composition. Use symmetry, contrast, and focal points to guide the viewer's eye.</textarea>
+                        <p class="help-text">These instructions guide the AI in creating prompts for image generation. Advanced users can modify this to change the style of generated images.</p>
+                    </div>
+                </div>
+                
                 <button id="submitButton" type="submit">Upload & Enhance</button>
             </form>
             <p>Job Status: <span id="jobStatus" class="status"></span></p>
@@ -174,6 +237,14 @@ def index3():
             if (sessionStorage.getItem('DEEPSEEK_API_KEY')) {
                 deepseekField.value = sessionStorage.getItem('DEEPSEEK_API_KEY');
             }
+            
+            // Set up the advanced settings toggle
+            document.getElementById('advancedToggle').addEventListener('click', function() {
+                const content = document.getElementById('advancedContent');
+                const isVisible = content.style.display === 'block';
+                content.style.display = isVisible ? 'none' : 'block';
+                this.classList.toggle('collapsed', !isVisible);
+            });
         };
 
         // Save API keys whenever their value changes
@@ -277,6 +348,9 @@ def upload_pptx3():
     openai_key = request.form.get('OPENAI_API_KEY', '')
     stability_key = request.form.get('STABILITY_API_KEY', '')
     deepseek_key = request.form.get('DEEPSEEK_API_KEY', '')
+    stability_prompt = request.form.get('stability_prompt', '')  # Get the custom stability prompt
+    deepseek_prompt = request.form.get('deepseek_prompt', '')  # Get the custom deepseek prompt
+    
     if openai_key:
         os.environ['OPENAI_API_KEY'] = openai_key
     if stability_key:
@@ -297,7 +371,9 @@ def upload_pptx3():
         "end_time": None,
         "file_path": "",
         "output_file": "",
-        "elapsed_time": 0
+        "elapsed_time": 0,
+        "stability_prompt": stability_prompt,  # Store the custom stability prompt
+        "deepseek_prompt": deepseek_prompt    # Store the custom deepseek prompt
     }
     jobs[session_id]['orig_filename'] = filename  # store original filename
 
@@ -321,6 +397,7 @@ def enhance_pptx_thread(session_id):
     filename_base, _ = os.path.splitext(orig_filename)
     output_file = os.path.join(GENERATED_FILES_DIR, f"{filename_base}_enhanced.pptx")
     jobs[session_id]['output_file'] = output_file
+    stability_prompt = jobs[session_id].get('stability_prompt', None)  # Get the custom prompt
 
     try:
         logs = jobs[session_id]['logs']
@@ -328,7 +405,8 @@ def enhance_pptx_thread(session_id):
         logs.append("Enhancement in progress. Please wait...")
         
         from pptx2enhancedpptx import enhance_pptx
-        enhance_pptx(saved_path, output_file)
+        # Pass the custom prompt to the enhance_pptx function
+        enhance_pptx(saved_path, output_file, stability_prompt=stability_prompt)
         
         time.sleep(2)
         total_time = time.time() - jobs[session_id]['start_time']

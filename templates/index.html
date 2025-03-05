@@ -149,6 +149,39 @@
             margin-bottom: 20px;
             white-space: pre-wrap; /* Preserve formatting */
         }
+
+        /* Style for advanced settings section */
+        .advanced-settings {
+            margin-top: 20px;
+            border-top: 1px dashed #ccc;
+            padding-top: 15px;
+        }
+        
+        .advanced-toggle {
+            color: #6200ea;
+            cursor: pointer;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+        }
+        
+        .advanced-toggle::after {
+            content: "▼";
+            margin-left: 5px;
+            transition: transform 0.3s;
+        }
+        
+        .advanced-toggle.collapsed::after {
+            transform: rotate(-90deg);
+        }
+        
+        .advanced-content {
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            margin-top: 10px;
+            display: none;
+        }
     </style>
     
     <script>
@@ -185,6 +218,14 @@
                 hasInteracted = true;
             }
         });
+        
+        // Set up advanced settings toggle
+        document.getElementById("advancedToggle").addEventListener("click", function() {
+            const content = document.getElementById("advancedContent");
+            const isVisible = content.style.display === "block";
+            content.style.display = isVisible ? "none" : "block";
+            this.classList.toggle("collapsed", !isVisible);
+        });
     };
 
     function startJob() {
@@ -192,6 +233,11 @@
         const addNotes = document.getElementById("addNotes").checked;
         const addImages = document.getElementById("addImages").checked;
         const markdownFile = document.getElementById("markdownFile").files[0];
+        
+        // Get custom prompts from the form
+        const stabilityPrompt = document.getElementById("stabilityPrompt").value;
+        const deepseekPrompt = document.getElementById("deepseekPrompt").value;
+        const speakerNotesPrompt = document.getElementById("speakerNotesPrompt").value;
 
         const formData = new FormData();
         if (markdownFile) {
@@ -201,6 +247,9 @@
         }
         formData.append('add_notes', addNotes);
         formData.append('add_images_stability', addImages);
+        formData.append('stabilityPrompt', stabilityPrompt);
+        formData.append('deepseekPrompt', deepseekPrompt);
+        formData.append('speakerNotesPrompt', speakerNotesPrompt);
 
         // Record and display the start timestamp in timestampsArea
         const startTime = new Date();
@@ -319,6 +368,31 @@
 
         <label><input type="checkbox" id="addNotes" /> Add Speaker Notes</label>
         <label><input type="checkbox" id="addImages" /> Add Images</label><br/><br/>
+
+        <!-- Advanced settings section -->
+        <div class="advanced-settings">
+            <div id="advancedToggle" class="advanced-toggle collapsed">Advanced Settings</div>
+            <div id="advancedContent" class="advanced-content">
+                <label for="stabilityPrompt">Image Generation Prompt:</label>
+                <textarea id="stabilityPrompt" rows="6" style="width: 100%;">Create a conceptual visualization of an abstract concept representing: {concept} STYLE: Abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content. Explore color symbolism and metaphorical representations. Avoid realistic objects or scenes. Focus on conveying the underlying ideas. DO NOT include text, numbers, or literal interpretations. Only abstract visual elements. BLUR TEXT in your images if generated. COMPOSITION: Create a balanced, harmonious composition. Use symmetry, contrast, and focal points to guide the viewer's eye. No sexuality or nudity or suggestive content. No text in the image. No violence or gore.</textarea>
+                
+                <label for="deepseekPrompt">DeepSeek Prompt Engineer Instructions:</label>
+                <textarea id="deepseekPrompt" rows="6" style="width: 100%;">You are a creative prompt engineer for AI image generation. Create VISUAL, ABSTRACT prompts for business concepts based on the content provided as context, with these rules:
+1. Focus on symbolic representations, not literal
+2. Use vivid color combinations and abstract shapes
+3. Incorporate dynamic compositions
+4. Reference artistic styles that resonate with a business audience to complement words with visuals
+5. Keep under 500 words
+6. STYLE: Abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content.
+7. NO WORDS should be in the image unless they are well understood and spelled correctly. Emphasizes abstract visual elements. BLUR TEXT in your images if generated. When conveying scientific concepts, use metaphorical representations.
+8. COMPOSITION: Create a balanced, harmonious composition. Use symmetry, contrast, and focal points to guide the viewer's eye.</textarea>
+                
+                <label for="speakerNotesPrompt">Speaker Notes Generation Prompt:</label>
+                <textarea id="speakerNotesPrompt" rows="4" style="width: 100%;">You are an expert presentation coach creating speaker notes for a slide. Provide clear, concise, and comprehensive talking points that expand on each bullet point without using markdown or any special formatting. Return the notes as plain text.</textarea>
+                
+                <p style="font-size: 12px; color: #666;">These prompts control how images and speaker notes are generated. You can customize them if needed.</p>
+            </div>
+        </div>
 
         <button onclick="startJob()">Generate PPTX</button>
 

@@ -26,7 +26,7 @@ def extract_slide_content(prs):
         })
     return slides_text
 
-def add_images_to_slides(prs, slides_text, adaptive_body_font_size):
+def add_images_to_slides(prs, slides_text, adaptive_body_font_size, stability_prompt=None):
     """
     For each slide, generate an image based on its text,
     then add the image in a layout similar to md2pptx.
@@ -50,7 +50,7 @@ def add_images_to_slides(prs, slides_text, adaptive_body_font_size):
 
         # Generate image using the existing pipeline
         try:
-            image_path = generate_image_stability(text_content)
+            image_path = generate_image_stability(text_content, stability_prompt)
             if not image_path:
                 image_path = placeholder_path
         except OpenAIError as e:
@@ -128,7 +128,7 @@ def add_images_to_slides(prs, slides_text, adaptive_body_font_size):
         
         layout_toggle = not layout_toggle
 
-def enhance_pptx(input_file, output_file=None):
+def enhance_pptx(input_file, output_file=None, stability_prompt=None):
     """
     Main function: extracts text from existing PPTX, generates images,
     places them on each slide using a layout toggle approach,
@@ -150,7 +150,7 @@ def enhance_pptx(input_file, output_file=None):
     else:
         # For very long text, reduce further but not below 14pt
         adaptive_font_size = max(14, round(18 - (max_text_len - 400) * (4 / 200)))
-    add_images_to_slides(prs, slides_text, adaptive_font_size)
+    add_images_to_slides(prs, slides_text, adaptive_font_size, stability_prompt)
     prs.save(output_file)
     print(f"Enhanced PPTX saved as {output_file}")
 
@@ -159,12 +159,23 @@ def main(cli_args=None):
         cli_args = sys.argv
 
     if len(cli_args) < 2:
-        print("Usage: python pptx2enhancedpptx.py <existing_pptx_file> [output_file]")
+        print("Usage: python pptx2enhancedpptx.py <existing_pptx_file> [output_file] [--stability-prompt <prompt>]")
         sys.exit(1)
 
     input_file = cli_args[1]
-    output_file = cli_args[2] if len(cli_args) > 2 else None
-    enhance_pptx(input_file, output_file)
+    output_file = cli_args[2] if len(cli_args) > 2 and not cli_args[2].startswith('--') else None
+    
+    # Parse stability prompt if provided
+    stability_prompt = None
+    try:
+        if '--stability-prompt' in cli_args:
+            prompt_index = cli_args.index('--stability-prompt') + 1
+            if prompt_index < len(cli_args):
+                stability_prompt = cli_args[prompt_index]
+    except (ValueError, IndexError):
+        pass
+    
+    enhance_pptx(input_file, output_file, stability_prompt)
 
 if __name__ == '__main__':
     main()

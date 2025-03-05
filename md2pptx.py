@@ -312,7 +312,7 @@ def get_theme_keywords(concept):
 # Helper function to generate a prompt for DeepSeek image generation
 # Returns: Prompt text for image generation or None if API key is missing
 # Used in the image generation process
-def generate_deepseek_prompt(concept):
+def generate_deepseek_prompt(concept, custom_prompt=None):
     api_key = os.getenv('DEEPSEEK_API_KEY')
     if not api_key:
         print("DeepSeek API key not found. Using fallback prompt generation.")
@@ -324,7 +324,7 @@ def generate_deepseek_prompt(concept):
             base_url="https://api.deepseek.com/v1",  # DeepSeek's API endpoint
         )
         
-        system_prompt = """You are a creative prompt engineer for AI image generation. Create VISUAL, ABSTRACT prompts for business concepts based on the content provided as context, with these rules:
+        system_prompt = custom_prompt or """You are a creative prompt engineer for AI image generation. Create VISUAL, ABSTRACT prompts for business concepts based on the content provided as context, with these rules:
                         1. Focus on symbolic representations, not literal
                         2. Use vivid color combinations and abstract shapes
                         3. Incorporate dynamic compositions
@@ -366,7 +366,7 @@ def generate_deepseek_prompt(concept):
 # and then delete the temporary file
 # The image data can be saved to a file and returned if needed
 # in the future
-def generate_image_stability(prompt, stability_prompt_override=None):
+def generate_image_stability(prompt, stability_prompt_override=None, deepseek_prompt_override=None):
     api_key = os.getenv('STABILITY_API_KEY')
     if not api_key:
         print("Stability API key not found. Skipping image generation.")
@@ -380,9 +380,8 @@ def generate_image_stability(prompt, stability_prompt_override=None):
         )
         
         # Get enhanced prompt from DeepSeek
-        # deepseek_prompt = generate_deepseek_prompt(prompt)
-        deepseek_prompt=None # temporarily stop generating prompts and use the static one
-
+        deepseek_prompt = generate_deepseek_prompt(prompt, deepseek_prompt_override)
+        
         if not deepseek_prompt:
             # Construct fallback prompt with a warning about DeepSeek failure
             print("Using fallback prompt due to DeepSeek prompt generation failure.")
@@ -506,7 +505,7 @@ def generate_speaker_notes(content, speaker_notes_prompt_override=None):
 # with dynamic font sizing and layout adjustments
 # based on the content of each slide
 # TODO: this may need to be refactored into smaller functions as it is getting complex
-def create_presentation(slides, output_path, add_notes=False, add_images_stability=False, stability_prompt=None, speaker_notes_prompt=None):
+def create_presentation(slides, output_path, add_notes=False, add_images_stability=False, stability_prompt=None, speaker_notes_prompt=None, deepseek_prompt=None):
     prs = Presentation()
     
     # Set slide dimensions
@@ -643,8 +642,8 @@ def create_presentation(slides, output_path, add_notes=False, add_images_stabili
                     continue
 
                 try:
-                    # Generate image - now returns a local file path within GENERATED_FILES_DIR
-                    image_path = generate_image_stability(key_points, stability_prompt)
+                    # Generate image - now passing both custom prompts
+                    image_path = generate_image_stability(key_points, stability_prompt, deepseek_prompt)
                     
                     if image_path:
                         try:
@@ -763,7 +762,7 @@ def main(cli_args=None, alt_output=None):
     cli_args = [arg for arg in cli_args if arg]
 
     if len(cli_args) < 2:
-        print("Usage: python md2pptx.py <markdown_file> [--add-notes] [--add-images-stability] [--stability-prompt <prompt>] [--speaker-notes-prompt <prompt>]")
+        print("Usage: python md2pptx.py <markdown_file> [--add-notes] [--add-images-stability] [--stability-prompt <prompt>] [--speaker-notes-prompt <prompt>] [--deepseek-prompt <prompt>]")
         sys.exit(1)
 
     markdown_file = cli_args[1]
@@ -777,6 +776,7 @@ def main(cli_args=None, alt_output=None):
 
     stability_prompt = None
     speaker_notes_prompt = None
+    deepseek_prompt = None
 
     try:
         stability_prompt_index = cli_args.index("--stability-prompt") + 1
@@ -789,12 +789,18 @@ def main(cli_args=None, alt_output=None):
         speaker_notes_prompt = cli_args[speaker_notes_prompt_index]
     except (ValueError, IndexError):
         pass
+    
+    try:
+        deepseek_prompt_index = cli_args.index("--deepseek-prompt") + 1
+        deepseek_prompt = cli_args[deepseek_prompt_index]
+    except (ValueError, IndexError):
+        pass
 
-    print(f"[DEBUG] Generating presentation from {markdown_file} with notes={add_notes}, images_stability={add_images_stability}, stability_prompt={stability_prompt}, speaker_notes_prompt={speaker_notes_prompt}")
+    print(f"[DEBUG] Generating presentation from {markdown_file} with notes={add_notes}, images_stability={add_images_stability}, stability_prompt={stability_prompt}, speaker_notes_prompt={speaker_notes_prompt}, deepseek_prompt={deepseek_prompt}")
     try:
         start_time = time.time()
         slides = parse_markdown(markdown_file)
-        create_presentation(slides, output_file, add_notes, add_images_stability, stability_prompt, speaker_notes_prompt)
+        create_presentation(slides, output_file, add_notes, add_images_stability, stability_prompt, speaker_notes_prompt, deepseek_prompt)
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(f"Presentation created successfully from {markdown_file}. Saved as {output_file}")
