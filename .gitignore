@@ -172,3 +172,4 @@ cython_debug/
 
 .keys*
 generated_files/
+resources/
