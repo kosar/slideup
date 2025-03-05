@@ -349,6 +349,10 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+@app.route('/help', methods=['GET'])
+def help_page():
+    return render_template('help.html')
+
 @app.route('/', methods=['GET'])
 def root():
     return render_template('md2pptx.html')

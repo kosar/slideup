@@ -281,6 +281,13 @@ def download_file(session_id):
         mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
     )
 
+@app.route('/help', methods=['GET'])
+def help_page():
+    """
+    Show the help page documentation
+    """
+    return render_template('help.html')
+
 if __name__ == '__main__':
     print("[INFO] Starting PPTX enhancement webapp")
     app.run(debug=True, port=5003)

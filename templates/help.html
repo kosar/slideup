@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SlideUp Help & Documentation</title>
+    <style>
+        :root {
+            --primary: #6200ea;
+            --primary-dark: #3700b3;
+            --primary-light: #bb86fc;
+            --secondary: #03DAC6;
+            --background: #f5f5f5;
+            --surface: #ffffff;
+            --error: #B00020;
+            --on-primary: #ffffff;
+            --on-background: #333333;
+            --on-surface: #333333;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background-color: var(--background);
+            color: var(--on-background);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: var(--on-primary);
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        header .container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header-links a {
+            color: var(--on-primary);
+            text-decoration: none;
+            margin-left: 1.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        
+        .header-links a:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        
+        main {
+            background-color: var(--surface);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        
+        h1, h2, h3 {
+            color: var(--primary);
+            margin-bottom: 1rem;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0;
+        }
+        
+        h2 {
+            font-size: 2rem;
+            margin-top: 2rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--primary-light);
+        }
+        
+        h3 {
+            font-size: 1.5rem;
+            margin-top: 1.5rem;
+        }
+        
+        p {
+            margin-bottom: 1rem;
+        }
+        
+        ul, ol {
+            margin-left: 2rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .card {
+            background-color: var(--surface);
+            border-left: 4px solid var(--primary);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+        
+        .note {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4caf50;
+        }
+        
+        .warning {
+            background-color: #fff3e0;
+            border-left: 4px solid #ff9800;
+        }
+        
+        .code-block {
+            background-color: #f5f5f5;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-family: 'Courier New', Courier, monospace;
+            margin-bottom: 1.5rem;
+            border: 1px solid #ddd;
+        }
+        
+        .app-section {
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .app-icon {
+            font-size: 2rem;
+            margin-right: 1rem;
+            vertical-align: middle;
+        }
+        
+        .link-button {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background-color: var(--primary);
+            color: var(--on-primary);
+            text-decoration: none;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+            margin-right: 1rem;
+        }
+        
+        .link-button:hover {
+            background-color: var(--primary-dark);
+        }
+        
+        .image-container {
+            text-align: center;
+            margin: 2rem 0;
+        }
+        
+        .image-container img {
+            max-width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        footer {
+            text-align: center;
+            padding: 2rem 0;
+            color: #666;
+            font-size: 0.9rem;
+        }
+        
+        /* Table styling */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+        }
+        
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        th {
+            background-color: #f5f5f5;
+            font-weight: 600;
+        }
+        
+        tr:hover {
+            background-color: #f9f9f9;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            header .container {
+                flex-direction: column;
+                text-align: center;
+            }
+            
+            .header-links {
+                margin-top: 1rem;
+            }
+            
+            .header-links a {
+                margin: 0 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>SlideUp Help & Documentation</h1>
+            <div class="header-links">
+                <a href="/">Back to Markdown to PPTX</a>
+                <a href="/enhance">Back to PPTX Enhancer</a>
+                <a href="https://github.com/kosar/slideup" target="_blank">GitHub Repository</a>
+            </div>
+        </div>
+    </header>
+    
+    <div class="container">
+        <main>
+            <h2>Introduction to SlideUp</h2>
+            <p>
+                SlideUp is a powerful set of tools designed to streamline the creation and enhancement of PowerPoint presentations. 
+                The project consists of two main applications:
+            </p>
+            
+            <ol>
+                <li><strong>Markdown to PPTX Converter</strong>: Create professional presentations from simple Markdown text.</li>
+                <li><strong>PPTX Enhancer</strong>: Enhance existing PowerPoint presentations with AI-generated images.</li>
+            </ol>
+            
+            <div class="card note">
+                <p><strong>Note:</strong> SlideUp uses AI technologies to generate both speaker notes and images, making it an intelligent presentation assistant.</p>
+            </div>
+            
+            <h2>Markdown to PPTX Web App</h2>
+            <div class="app-section">
+                <h3>Getting Started</h3>
+                <p>
+                    This tool allows you to create professional PowerPoint presentations from Markdown text. The conversion process is straightforward:
+                </p>
+                
+                <ol>
+                    <li>Enter Markdown text in the text area or upload a Markdown file.</li>
+                    <li>Select options for adding speaker notes and/or images.</li>
+                    <li>Click "Generate PPTX" to start the conversion process.</li>
+                    <li>Once complete, download the generated PPTX file.</li>
+                </ol>
+                
+                <h3>Markdown Format</h3>
+                <p>The Markdown to PPTX tool expects a specific format to generate well-structured presentations:</p>
+                
+                <div class="code-block">
+# Main Presentation Title
+
+### Slide 1: Title Slide
+- **title:** Your Presentation Title
+- **subtitle:** Optional Subtitle
+- **presenter:** Your Name
+- **date:** Presentation Date
+
+### Slide 2: Content Slide
+- **text:** 
+  * First bullet point
+  * Second bullet point
+  * Third bullet point with **bold** text
+</div>
+                
+                <h3>Advanced Settings</h3>
+                <p>
+                    The advanced settings section provides additional customization options:
+                </p>
+                
+                <ul>
+                    <li><strong>API Keys</strong>: You can provide your own API keys for OpenAI, Stability AI, and DeepSeek.</li>
+                    <li><strong>Image Generation Prompt</strong>: Customize the prompt used for generating images.</li>
+                    <li><strong>DeepSeek Prompt Engineer Instructions</strong>: Fine-tune instructions for the DeepSeek AI.</li>
+                    <li><strong>Speaker Notes Generation Prompt</strong>: Customize how speaker notes are generated.</li>
+                </ul>
+            </div>
+            
+            <h2>PPTX Enhancer Web App</h2>
+            <div class="app-section">
+                <h3>Getting Started</h3>
+                <p>
+                    The PPTX Enhancer allows you to upload existing PowerPoint presentations and enhance them with AI-generated images:
+                </p>
+                
+                <ol>
+                    <li>Select and upload a PPTX file from your computer.</li>
+                    <li>Configure advanced settings if needed (API keys, image prompts).</li>
+                    <li>Click "Upload & Enhance" to start the process.</li>
+                    <li>Once complete, download the enhanced PPTX file.</li>
+                </ol>
+                
+                <h3>How Enhancement Works</h3>
+                <p>
+                    The enhancement process performs the following steps:
+                </p>
+                
+                <ol>
+                    <li>Extracts text content from each slide.</li>
+                    <li>Generates relevant abstract images based on the text content.</li>
+                    <li>Adds images to slides in an alternating left-right layout.</li>
+                    <li>Adjusts text positioning and formatting to accommodate images.</li>
+                    <li>Creates a new enhanced PPTX file for download.</li>
+                </ol>
+                
+                <div class="card warning">
+                    <p><strong>Note:</strong> The enhancement process works best with text-heavy slides and may take several minutes depending on the number of slides.</p>
+                </div>
+            </div>
+            
+            <h2>Under the Hood: How SlideUp Works</h2>
+            
+            <h3>Architecture Overview</h3>
+            <p>
+                SlideUp is built with a modular architecture consisting of several Python components:
+            </p>
+            
+            <table>
+                <tr>
+                    <th>Component</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td>markdown2pptx_webapp.py</td>
+                    <td>Flask web application that handles the Markdown to PPTX conversion and serves both web interfaces.</td>
+                </tr>
+                <tr>
+                    <td>md2pptx.py</td>
+                    <td>Core module for processing Markdown and generating PPTX files.</td>
+                </tr>
+                <tr>
+                    <td>pptx2enhancedpptx.py</td>
+                    <td>Handles enhancement of existing PPTX files by adding AI-generated images.</td>
+                </tr>
+                <tr>
+                    <td>env_utils.py</td>
+                    <td>Utility functions for handling environment variables and API keys.</td>
+                </tr>
+            </table>
+            
+            <h3>Technologies Used</h3>
+            <p>SlideUp leverages several key technologies:</p>
+            
+            <ul>
+                <li><strong>Python-PPTX</strong>: Library for creating and modifying PowerPoint files</li>
+                <li><strong>Flask</strong>: Web framework for the user interface</li>
+                <li><strong>OpenAI API</strong>: For generating speaker notes and enhancing content</li>
+                <li><strong>Stability AI</strong>: For generating abstract images for slides</li>
+                <li><strong>DeepSeek AI</strong>: For intelligent prompt engineering</li>
+                <li><strong>Google Drive API</strong>: For optional file storage in Google Drive</li>
+            </ul>
+            
+            <h3>Image Generation Process</h3>
+            <p>
+                The image generation process is particularly sophisticated:
+            </p>
+            
+            <ol>
+                <li>Text content from a slide is extracted and analyzed.</li>
+                <li>DeepSeek AI creates an optimized prompt based on the slide content.</li>
+                <li>The optimized prompt is sent to Stability AI for image generation.</li>
+                <li>The generated image is processed and integrated into the slide.</li>
+            </ol>
+            
+            <h3>Speaker Notes Generation</h3>
+            <p>
+                When speaker notes generation is enabled:
+            </p>
+            
+            <ol>
+                <li>The system extracts key points from each slide.</li>
+                <li>These points are sent to OpenAI for expansion into comprehensive speaking notes.</li>
+                <li>The AI generates natural-sounding, contextually relevant notes.</li>
+                <li>These notes are added to the corresponding slides in the presentation.</li>
+            </ol>
+            
+        </main>
+        
+        <div class="app-section">
+            <h2>Additional Resources</h2>
+            <p>
+                For more detailed information, check out these resources:
+            </p>
+            <ul>
+                <li><a href="https://github.com/kosar/slideup" target="_blank">GitHub Repository</a></li>
+                <li><a href="https://github.com/kosar/slideup/blob/main/README.md" target="_blank">README.md</a></li>
+                <li><a href="https://github.com/kosar/slideup/blob/main/User%20Guide.md" target="_blank">User Guide</a></li>
+            </ul>
+            <p>
+                <a href="/" class="link-button">Go to Markdown to PPTX</a>
+                <a href="/enhance" class="link-button">Go to PPTX Enhancer</a>
+            </p>
+        </div>
+        
+        <footer>
+            <p>SlideUp is an open-source project available on <a href="https://github.com/kosar/slideup" target="_blank">GitHub</a>.</p>
+            <p>&copy; 2023. All rights reserved.</p>
+        </footer>
+    </div>
+</body>
+</html>

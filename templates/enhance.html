@@ -149,11 +149,30 @@
             margin-top: 8px;
             margin-bottom: 15px;
         }
+        
+        /* Add styles for help link */
+        .help-link {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #5563DE;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            background-color: rgba(85, 99, 222, 0.1);
+            font-weight: 500;
+            transition: background-color 0.3s;
+        }
+        
+        .help-link:hover {
+            background-color: rgba(85, 99, 222, 0.2);
+        }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>Enhance PPTX File</h1>
+        <a href="/help" class="help-link">Help & Documentation</a>
         <form id="uploadForm" enctype="multipart/form-data">
             <label>Select PPTX File:</label>
             <input type="file" name="pptx_file">

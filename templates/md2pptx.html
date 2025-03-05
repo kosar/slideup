@@ -213,6 +213,21 @@
             margin-top: 8px;
             margin-bottom: 15px;
         }
+
+        /* Add styles for help link */
+        .help-link {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #6200ea;
+            text-decoration: none;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        
+        .help-link:hover {
+            text-decoration: underline;
+        }
     </style>
     
     <script>
@@ -440,6 +455,7 @@
 <body>
     <div class="container">
         <h1>Markdown to Slides Web App</h1>
+        <a href="/help" class="help-link">Help & Documentation</a>
         <textarea id="markdownInput" rows="15" cols="80" class="default-text"></textarea><br/>
 
         <form id="uploadForm" enctype="multipart/form-data">
