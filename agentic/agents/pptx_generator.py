@@ -41,23 +41,34 @@ class PPTXBuilderTool(BaseTool):
     name: str = "BuildPPTX"
     description: str = "Constructs a PowerPoint file from a structured slide plan"
 
-    def _run(self, slide_plan_json: str, output_pptx_path: str) -> str:
+    def _run(self, slide_plan_json: str, output_pptx_path: str = "presentation.pptx") -> str:
         """
         Create a PowerPoint presentation (.pptx) from the provided slide plan JSON.
         
         Args:
             slide_plan_json: JSON string with the structured slides data.
-            output_pptx_path: Where to save the resulting PPTX.
+            output_pptx_path: Where to save the resulting PPTX. Defaults to 'presentation.pptx'.
         
         Returns:
             File path of the created PPTX.
         """
         try:
+            print(f"Building presentation at: {output_pptx_path}")
             slide_plan = json.loads(slide_plan_json)
             prs = Presentation()
 
+            # Ensure the slides key exists
+            if "slides" not in slide_plan and isinstance(slide_plan, dict):
+                # Try to adapt the structure if it doesn't have a slides key but looks like a slide plan
+                if any(key in slide_plan for key in ["total_slides", "has_title_slide"]):
+                    print("Using slide plan as-is")
+                else:
+                    # Wrap the dictionary in a slides list if it seems to be a single slide
+                    print("Wrapping input in slides key")
+                    slide_plan = {"slides": [slide_plan]}
+
             for i, slide_info in enumerate(slide_plan.get("slides", [])):
-                if i == 0 and slide_plan.get("has_title_slide"):
+                if i == 0 and slide_plan.get("has_title_slide", True):  # Default to True for has_title_slide
                     layout = prs.slide_layouts[0]  # Title slide layout
                 else:
                     # Use a generic title & content layout
@@ -113,6 +124,9 @@ class PPTXBuilderTool(BaseTool):
             prs.save(output_pptx_path)
             return output_pptx_path
         except Exception as e:
+            print(f"Error building PPTX: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return f"Failed to build PPTX: {str(e)}"
 
 
@@ -139,7 +153,7 @@ class PPTXGeneratorAgent:
             allow_delegation=False
         )
 
-    def generate_pptx_from_analysis(self, slide_plan: Dict[str, Any], output_path: str) -> str:
+    def generate_pptx_from_analysis(self, slide_plan: dict, output_path: str) -> str:
         """
         High-level method to build the PPTX directly from a Python dict (slide_plan).
         

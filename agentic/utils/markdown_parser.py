@@ -1,5 +1,5 @@
 """
-Utility for parsing and processing Markdown content.
+Utility class for parsing and analyzing Markdown content.
 """
 
 import re
@@ -9,7 +9,9 @@ from bs4 import BeautifulSoup
 
 
 class MarkdownParser:
-    """Markdown content parsing and processing utility."""
+    """
+    A utility class that provides methods for parsing and analyzing Markdown content.
+    """
     
     def __init__(self):
         """Initialize the Markdown parser."""
@@ -28,259 +30,262 @@ class MarkdownParser:
         self.md.reset()
         return self.md.convert(md_content)
     
-    def extract_headers(self, md_content: str) -> List[Dict[str, Any]]:
-        """
-        Extract headers from Markdown content with their levels.
-        
-        Args:
-            md_content: Markdown content as a string
-            
-        Returns:
-            List of dictionaries with header text and level
-        """
+    def extract_headers(self, markdown_content):
+        """Extract headers from Markdown content."""
         headers = []
-        lines = md_content.splitlines()
-        
-        for line in lines:
-            header_match = re.match(r'^(#+)\s+(.+)$', line)
-            if header_match:
-                level = len(header_match.group(1))
-                text = header_match.group(2).strip()
+        for line in markdown_content.split('\n'):
+            line = line.strip()
+            if line.startswith('#'):
+                # Count the number of # to determine the level
+                level = 0
+                for char in line:
+                    if char == '#':
+                        level += 1
+                    else:
+                        break
+                
+                # Extract the header text without the # symbols
+                header_text = line[level:].strip()
+                
                 headers.append({
                     'level': level,
-                    'text': text
+                    'text': header_text
                 })
         
         return headers
     
-    def extract_code_blocks(self, md_content: str) -> List[Dict[str, str]]:
-        """
-        Extract code blocks from Markdown content.
-        
-        Args:
-            md_content: Markdown content as a string
-            
-        Returns:
-            List of dictionaries with code content and language
-        """
-        code_blocks = []
-        pattern = re.compile(r'```(\w*)\n(.*?)\n```', re.DOTALL)
-        
-        for match in pattern.finditer(md_content):
-            language = match.group(1) or "text"
-            code = match.group(2)
-            code_blocks.append({
-                'language': language,
-                'code': code
-            })
-        
-        return code_blocks
-    
-    def extract_lists(self, md_content: str) -> List[Dict[str, Any]]:
-        """
-        Extract lists from Markdown content.
-        
-        Args:
-            md_content: Markdown content as a string
-            
-        Returns:
-            List of dictionaries with list items and type
-        """
-        # Convert to HTML and parse with BeautifulSoup for accurate list extraction
-        html = self.md_to_html(md_content)
-        soup = BeautifulSoup(html, 'html.parser')
-        
+    def extract_lists(self, markdown_content):
+        """Extract lists from Markdown content."""
         lists = []
+        current_list = None
         
-        # Find all ul and ol elements
-        for list_elem in soup.find_all(['ul', 'ol']):
-            list_type = 'unordered' if list_elem.name == 'ul' else 'ordered'
-            items = [li.get_text() for li in list_elem.find_all('li', recursive=False)]
+        for line in markdown_content.split('\n'):
+            line = line.strip()
             
-            # Check for nested lists
-            nested_items = []
-            for li in list_elem.find_all('li', recursive=False):
-                nested_list = li.find(['ul', 'ol'])
-                if nested_list:
-                    nested_type = 'unordered' if nested_list.name == 'ul' else 'ordered'
-                    nested_items.append({
-                        'parent': li.get_text().replace(nested_list.get_text(), '').strip(),
-                        'type': nested_type,
-                        'items': [nested_li.get_text() for nested_li in nested_list.find_all('li')]
-                    })
-            
-            lists.append({
-                'type': list_type,
-                'items': items,
-                'nested': nested_items if nested_items else None
-            })
+            # Check for list items
+            if line.startswith(('- ', '* ', '+ ', '1. ', '2. ')):
+                if current_list is None:
+                    # Start a new list
+                    list_type = 'unordered' if line.startswith(('- ', '* ', '+ ')) else 'ordered'
+                    current_list = {
+                        'type': 'list',
+                        'list_type': list_type,
+                        'items': []
+                    }
+                
+                # Extract the list item text
+                if line.startswith(('- ', '* ', '+ ')):
+                    item_text = line[2:].strip()
+                else:  # ordered list
+                    parts = line.split('. ', 1)
+                    if len(parts) > 1:
+                        item_text = parts[1].strip()
+                    else:
+                        item_text = ''
+                
+                current_list['items'].append(item_text)
+            else:
+                # End of the list
+                if current_list is not None:
+                    lists.append(current_list)
+                    current_list = None
+        
+        # Add the last list if there is one
+        if current_list is not None:
+            lists.append(current_list)
         
         return lists
     
-    def extract_tables(self, md_content: str) -> List[Dict[str, Any]]:
-        """
-        Extract tables from Markdown content.
+    def extract_code_blocks(self, markdown_content):
+        """Extract code blocks from Markdown content."""
+        code_blocks = []
+        in_code_block = False
+        current_block = None
+        language = ''
         
-        Args:
-            md_content: Markdown content as a string
-            
-        Returns:
-            List of dictionaries with table headers and rows
-        """
-        html = self.md_to_html(md_content)
-        soup = BeautifulSoup(html, 'html.parser')
+        for line in markdown_content.split('\n'):
+            if line.startswith('```'):
+                if not in_code_block:
+                    # Start of a code block
+                    in_code_block = True
+                    language = line[3:].strip()
+                    current_block = {
+                        'type': 'code',
+                        'language': language,
+                        'code': ''
+                    }
+                else:
+                    # End of a code block
+                    in_code_block = False
+                    code_blocks.append(current_block)
+                    current_block = None
+            elif in_code_block and current_block is not None:
+                # Add the line to the current code block
+                if current_block['code']:
+                    current_block['code'] += '\n'
+                current_block['code'] += line
         
+        return code_blocks
+    
+    def extract_tables(self, markdown_content):
+        """Extract tables from Markdown content."""
         tables = []
+        in_table = False
+        current_table = None
         
-        for table in soup.find_all('table'):
-            headers = []
-            header_row = table.find('thead')
-            if header_row:
-                headers = [th.get_text().strip() for th in header_row.find_all('th')]
+        for line in markdown_content.split('\n'):
+            line = line.strip()
             
-            rows = []
-            body = table.find('tbody')
-            if body:
-                for tr in body.find_all('tr'):
-                    rows.append([td.get_text().strip() for td in tr.find_all('td')])
-            
-            tables.append({
-                'headers': headers,
-                'rows': rows
-            })
+            # Check for table rows
+            if '|' in line:
+                if not in_table:
+                    # Start of a table
+                    in_table = True
+                    current_table = {
+                        'type': 'table',
+                        'headers': [],
+                        'rows': []
+                    }
+                    
+                    # Extract the headers
+                    cells = [cell.strip() for cell in line.split('|')]
+                    # Remove empty cells at the beginning and end
+                    if cells and not cells[0]:
+                        cells = cells[1:]
+                    if cells and not cells[-1]:
+                        cells = cells[:-1]
+                    
+                    current_table['headers'] = cells
+                elif line.replace('-', '').replace('|', '').replace(':', '').strip() == '':
+                    # This is the separator line, skip it
+                    continue
+                else:
+                    # This is a data row
+                    cells = [cell.strip() for cell in line.split('|')]
+                    # Remove empty cells at the beginning and end
+                    if cells and not cells[0]:
+                        cells = cells[1:]
+                    if cells and not cells[-1]:
+                        cells = cells[:-1]
+                    
+                    current_table['rows'].append(cells)
+            else:
+                # End of the table
+                if in_table and current_table is not None:
+                    tables.append(current_table)
+                    current_table = None
+                    in_table = False
+        
+        # Add the last table if there is one
+        if in_table and current_table is not None:
+            tables.append(current_table)
         
         return tables
     
-    def extract_links(self, md_content: str) -> List[Dict[str, str]]:
-        """
-        Extract links from Markdown content.
-        
-        Args:
-            md_content: Markdown content as a string
-            
-        Returns:
-            List of dictionaries with link text and URLs
-        """
-        links = []
-        pattern = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
-        
-        for match in pattern.finditer(md_content):
-            text = match.group(1)
-            url = match.group(2)
-            links.append({
-                'text': text,
-                'url': url
-            })
-        
-        return links
-    
-    def extract_images(self, md_content: str) -> List[Dict[str, str]]:
-        """
-        Extract images from Markdown content.
-        
-        Args:
-            md_content: Markdown content as a string
-            
-        Returns:
-            List of dictionaries with image alt text and source URLs
-        """
+    def extract_images(self, markdown_content):
+        """Extract images from Markdown content."""
         images = []
-        pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
         
-        for match in pattern.finditer(md_content):
+        # Regular expression to match Markdown image syntax
+        image_pattern = r'!\[(.*?)\]\((.*?)\)'
+        
+        for match in re.finditer(image_pattern, markdown_content):
             alt_text = match.group(1)
-            src = match.group(2)
+            image_url = match.group(2)
+            
             images.append({
-                'alt_text': alt_text,
-                'src': src
+                'type': 'image',
+                'alt': alt_text,
+                'src': image_url
             })
         
         return images
     
-    def md_to_slides_content(self, md_content: str) -> List[Dict[str, Any]]:
-        """
-        Convert Markdown content to a structured format suitable for slide creation.
+    def md_to_slides_content(self, markdown_content):
+        """Convert Markdown content to slides structure."""
+        headers = self.extract_headers(markdown_content)
+        if not headers:
+            # If no headers, treat as a single slide
+            return [{
+                'title': 'Slide',
+                'content': self._extract_content_between_headers(markdown_content, 0, len(markdown_content))
+            }]
         
-        Args:
-            md_content: Markdown content as a string
+        # Split the content into slides based on h1 headers
+        slides_data = []
+        h1_indexes = []
+        
+        # Find all h1 headers
+        lines = markdown_content.split('\n')
+        for i, line in enumerate(lines):
+            if line.strip().startswith('# '):
+                h1_indexes.append(i)
+        
+        # Add an end index
+        h1_indexes.append(len(lines))
+        
+        # Create slides from h1 sections
+        for i in range(len(h1_indexes) - 1):
+            start_idx = h1_indexes[i]
+            end_idx = h1_indexes[i+1]
             
-        Returns:
-            List of slide content dictionaries
-        """
-        headers = self.extract_headers(md_content)
-        slides = []
-        current_slide = None
-        
-        # Use headers as slide boundaries
-        for header in headers:
-            if header['level'] == 1 or header['level'] == 2:
-                if current_slide:
-                    slides.append(current_slide)
-                current_slide = {
-                    'title': header['text'],
-                    'content': []
-                }
-            elif current_slide:
-                current_slide['content'].append({
+            # Get the slide title (h1 header)
+            title = lines[start_idx][2:].strip()
+            
+            # Extract content between this h1 and the next one
+            content_text = '\n'.join(lines[start_idx+1:end_idx])
+            content = []
+            
+            # Extract lists
+            lists = self.extract_lists(content_text)
+            content.extend(lists)
+            
+            # Extract code blocks
+            code_blocks = self.extract_code_blocks(content_text)
+            content.extend(code_blocks)
+            
+            # Extract images
+            images = self.extract_images(content_text)
+            content.extend(images)
+            
+            # Extract tables
+            tables = self.extract_tables(content_text)
+            content.extend(tables)
+            
+            # Add subheadings (h2, h3, etc.)
+            subheaders = [h for h in self.extract_headers(content_text) if h['level'] > 1]
+            for header in subheaders:
+                content.append({
                     'type': 'subheading',
-                    'text': header['text'],
-                    'level': header['level']
+                    'level': header['level'],
+                    'text': header['text']
                 })
-        
-        # Add the last slide if there is one
-        if current_slide:
-            slides.append(current_slide)
             
-        # Now process the content between headers
-        sections = re.split(r'^#+\s+.+$', md_content, flags=re.MULTILINE)
-        sections = sections[1:] if len(sections) > len(slides) else sections
+            slides_data.append({
+                'title': title,
+                'content': content
+            })
         
-        for i, section in enumerate(sections):
-            if i < len(slides):
-                # Extract lists
-                for list_match in self.extract_lists(section):
-                    slides[i]['content'].append({
-                        'type': 'list',
-                        'list_type': list_match['type'],
-                        'items': list_match['items']
-                    })
-                
-                # Extract code blocks
-                for code_block in self.extract_code_blocks(section):
-                    slides[i]['content'].append({
-                        'type': 'code',
-                        'language': code_block['language'],
-                        'code': code_block['code']
-                    })
-                
-                # Extract images
-                for image in self.extract_images(section):
-                    slides[i]['content'].append({
-                        'type': 'image',
-                        'alt': image['alt_text'],
-                        'src': image['src']
-                    })
-                
-                # Extract tables
-                for table in self.extract_tables(section):
-                    slides[i]['content'].append({
-                        'type': 'table',
-                        'headers': table['headers'],
-                        'rows': table['rows']
-                    })
-                
-                # Add any remaining text as paragraphs
-                # Remove already processed elements and get remaining text
-                clean_section = re.sub(r'```.*?```', '', section, flags=re.DOTALL)
-                clean_section = re.sub(r'!\[.*?\]\(.*?\)', '', clean_section)
-                clean_section = re.sub(r'\|.*?\|', '', clean_section)
-                
-                paragraphs = [p.strip() for p in clean_section.split('\n\n') if p.strip()]
-                for para in paragraphs:
-                    if not re.match(r'^[-*+]\s+', para) and para.strip():
-                        slides[i]['content'].append({
-                            'type': 'paragraph',
-                            'text': para.strip()
-                        })
+        return slides_data
+    
+    def _extract_content_between_headers(self, text, start, end):
+        """Helper method to extract content between headers."""
+        content = []
         
-        return slides
+        # Extract the text between start and end
+        content_text = text[start:end]
+        
+        # Extract lists, code blocks, images, and tables
+        lists = self.extract_lists(content_text)
+        content.extend(lists)
+        
+        code_blocks = self.extract_code_blocks(content_text)
+        content.extend(code_blocks)
+        
+        images = self.extract_images(content_text)
+        content.extend(images)
+        
+        tables = self.extract_tables(content_text)
+        content.extend(tables)
+        
+        return content

@@ -16,3 +16,5 @@ __all__ = [
     'MarkdownParser',
     'LLMInterface'
 ]
+
+# Empty file to make the directory a Python package

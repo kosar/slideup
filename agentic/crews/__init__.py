@@ -1,1 +1,1 @@
-# This file allows the crews directory to be treated as a package
+# Empty file to make the directory a Python package

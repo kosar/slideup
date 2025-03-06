@@ -1,3 +1,4 @@
+# Empty file to make the directory a Python package
 """
 Agent modules for the SlideUp project.
 """
