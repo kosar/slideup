@@ -1,4 +1,7 @@
-# This file allows the agents directory to be treated as a package
-from .base_agent import BaseAgent
+"""
+Agent modules for the SlideUp project.
+"""
 
-__all__ = ['BaseAgent']
+from .markdown_analyzer import MarkdownAnalyzerAgent
+
+__all__ = ['MarkdownAnalyzerAgent']
