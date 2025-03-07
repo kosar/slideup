@@ -1,7 +1,8 @@
 """
-SlideUp Agentic Tools Module.
-A collection of utilities for working with crewAI in the SlideUp project.
+SlideUp AI - Presentation Automation Tool
 """
+
+__version__ = "0.1.0"
 
 from . import utils
 
