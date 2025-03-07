@@ -6,10 +6,12 @@ from pathlib import Path
 import base64
 from io import BytesIO
 
-# Add the parent directory to sys.path to enable imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure project root is in path for proper module imports
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-# Import crews
+# Import crews - now the imports will work properly
 from agentic.crews.markdown2pptx_crew import Markdown2PPTXCrew
 from agentic.crews.pptx_enhancement_crew import PPTXEnhancementCrew
 
