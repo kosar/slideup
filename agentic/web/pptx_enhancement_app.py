@@ -1,13 +1,14 @@
 import streamlit as st
 import os
 import sys
+from pathlib import Path
 
-# Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-if project_root not in sys.path:
-    sys.path.append(project_root)
+# Guarantee the project root is in sys.path regardless of execution context
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-# Verify the import path
+# Now we can safely use absolute imports from the project root
 from agentic.crews.pptx_enhancement_crew import PPTXEnhancementCrew
 
 st.title("PowerPoint Enhancement App")
@@ -36,6 +37,9 @@ if uploaded_file is not None:
         with st.spinner("Enhancing..."):
             crew = PPTXEnhancementCrew()
             output_path = "./output/enhanced_presentation.pptx"
+            
+            # Create output directory if it doesn't exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             # Save uploaded file to a temporary location
             temp_input_path = os.path.join("/tmp", uploaded_file.name)
