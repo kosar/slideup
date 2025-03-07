@@ -1,89 +1,112 @@
+#!/usr/bin/env python3
+"""
+Enhanced PowerPoint presentation enhancement demo script.
+
+This script demonstrates how to use the PPTXEnhancementCrew to enhance a PowerPoint presentation.
+"""
+
 import os
 import sys
 import argparse
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Add parent directory to path so we can import modules
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+# Add the parent directory to sys.path to enable imports
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-# Import the crew directly
 from agentic.crews.pptx_enhancement_crew import PPTXEnhancementCrew
 
 def main():
-    """Enhanced demo script showing how to use the PPTX Enhancement Crew with more options."""
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Enhance a PowerPoint presentation.")
-    parser.add_argument("--input", "-i", help="Input PPTX file path")
-    parser.add_argument("--output", "-o", help="Output PPTX file path")
-    parser.add_argument("--design", "-d", action="store_true", help="Improve design", default=True)
-    parser.add_argument("--content", "-c", action="store_true", help="Improve content", default=True)
-    parser.add_argument("--structure", "-s", action="store_true", help="Improve structure", default=True)
-    parser.add_argument("--level", "-l", choices=["light", "moderate", "comprehensive"], 
-                        default="moderate", help="Enhancement level")
-    parser.add_argument("--audience", "-a", default="General audience", 
-                        help="Target audience (e.g., 'Technical professionals', 'Executive leadership')")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output", default=True)
-    
+    """Run the demo."""
+    parser = argparse.ArgumentParser(description='Enhance a PowerPoint presentation')
+    parser.add_argument('-i', '--input', type=str, default='tests/demo_files/sample_presentation.pptx',
+                        help='Path to the input PowerPoint file')
+    parser.add_argument('-o', '--output', type=str, default='tests/output/enhanced_presentation.pptx',
+                        help='Path to save the enhanced PowerPoint file')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Show detailed output')
     args = parser.parse_args()
     
-    # Load environment variables for API keys
-    load_dotenv()
+    # Get API key from environment variable
     api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("Error: OPENAI_API_KEY environment variable not set")
+        return 1
     
-    # Initialize the crew
+    # Ensure output directory exists
+    output_dir = os.path.dirname(args.output)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Initialize the crew with API key
     crew = PPTXEnhancementCrew(api_key=api_key, verbose=args.verbose)
     
-    # Define input and output files
-    script_dir = Path(__file__).parent
-    project_root = script_dir.parent.parent  # This is /Users/kosar/src/slideup
-    
-    input_file = args.input if args.input else project_root / "data/sample_presentation.pptx"
-    output_file = args.output if args.output else project_root / "output/enhanced_presentation.pptx"
-    
-    # Convert to Path objects if they're strings
-    if isinstance(input_file, str):
-        input_file = Path(input_file)
-    if isinstance(output_file, str):
-        output_file = Path(output_file)
-    
-    # Make sure output directory exists
-    output_file.parent.mkdir(exist_ok=True, parents=True)
-    
-    # Define enhancement options
-    enhancement_options = {
-        "improve_design": args.design,
-        "improve_content": args.content,
-        "improve_structure": args.structure,
-        "enhancement_level": args.level,
-        "target_audience": args.audience,
-        "style_guide": {
-            "preferred_colors": ["#3498db", "#2ecc71", "#e74c3c", "#f39c12"],
-            "preferred_fonts": ["Arial", "Calibri", "Georgia"]
-        }
-    }
-    
-    print(f"\n===== PPTX Enhancement Demo =====")
-    print(f"Input file: {input_file}")
-    print(f"Output file: {output_file}")
-    print(f"Enhancement options: {enhancement_options}")
-    print(f"=================================\n")
-    
+    # Enhance the presentation
     try:
-        enhanced_file = crew.enhance_presentation(
-            input_file=str(input_file),
-            output_file=str(output_file),
+        print(f"Enhancing presentation {args.input}...")
+        
+        # Define enhancement options
+        enhancement_options = {
+            "improve_design": True,
+            "improve_content": True,
+            "improve_structure": True,
+            "enhancement_level": "moderate",
+            "target_audience": "Business professionals",
+            "style_guide": {
+                "preferred_colors": ["#336699", "#66CCCC", "#FF9966"],
+                "preferred_fonts": ["Arial", "Georgia"]
+            }
+        }
+        
+        # Use the enhance_presentation method
+        result = crew.enhance_presentation(
+            input_file=args.input, 
+            output_file=args.output,
             enhancement_options=enhancement_options
         )
         
-        print(f"\n✅ Enhancement complete!")
-        print(f"Enhanced presentation saved to: {enhanced_file}")
+        print(f"Enhancement completed successfully!")
+        print(f"Enhanced presentation saved to: {args.output}")
+        return 0
         
     except Exception as e:
-        print(f"\n❌ Enhancement failed: {e}")
+        print(f"Error: {e}")
         return 1
+
+def create_sample_presentation():
+    """Create a sample PowerPoint presentation for testing if needed."""
+    from pptx import Presentation
     
-    return 0
+    # This is a simplified version that just creates a basic presentation
+    prs = Presentation()
+    
+    # Add a title slide
+    title_slide_layout = prs.slide_layouts[0]
+    slide = prs.slides.add_slide(title_slide_layout)
+    title = slide.shapes.title
+    subtitle = slide.placeholders[1]
+    title.text = "Sample Presentation"
+    subtitle.text = "For Testing Enhancement"
+    
+    # Add a content slide
+    bullet_slide_layout = prs.slide_layouts[1]
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    title = slide.shapes.title
+    content = slide.placeholders[1]
+    title.text = "Bullet Points"
+    content.text = "• First bullet point\n• Second bullet point\n• Third bullet point"
+    
+    # Ensure directory exists
+    os.makedirs("tests/demo_files", exist_ok=True)
+    
+    # Save the presentation
+    file_path = "tests/demo_files/sample_presentation.pptx"
+    prs.save(file_path)
+    print(f"Created sample presentation at: {file_path}")
+    
+    return file_path
 
 if __name__ == "__main__":
+    # Check if the sample file exists, create it if not
+    sample_file = Path("tests/demo_files/sample_presentation.pptx")
+    if not sample_file.exists():
+        create_sample_presentation()
+        
     exit(main())
