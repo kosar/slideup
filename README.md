@@ -1,14 +1,47 @@
 # SlideUp AI
 
-A presentation assistant powered by AI that helps you create and improve PowerPoint presentations. This project offers two separate implementations with the same functionality:
+A presentation assistant powered by AI that helps you create and improve PowerPoint presentations. This project offers two separate implementations:
 
 1. **Agentic Implementation**: Using CrewAI framework with a Streamlit interface
-2. **Flask Implementation**: A traditional web application using Flask
+2. **Flask Implementation**: Traditional web applications using Flask
+
+## Repository Structure
+
+```
+slideup/
+├── agentic/                 # CrewAI implementation
+│   ├── app.py               # Streamlit application
+│   ├── crews/               # AI crew implementations
+│   │   ├── markdown2pptx_crew.py
+│   │   └── pptx_enhancement_crew.py
+│   ├── agents/              # Individual agent definitions
+│   │   ├── designer_agent.py
+│   │   ├── content_agent.py
+│   │   └── formatter_agent.py
+│   └── utils/               # Utility functions
+│       ├── markdown_parser.py
+│       └── pptx_generator.py
+├── flask_apps/              # Flask web applications
+│   ├── markdown2pptx_webapp.py    # Convert markdown to PPTX
+│   ├── pptx_enhancement_webapp.py # Enhance existing PPTX files
+│   └── templates/           # HTML templates
+│       ├── markdown_form.html
+│       └── pptx_form.html
+├── lib/                     # Shared library code
+│   ├── ai_services.py       # AI API interfaces
+│   ├── slide_generator.py   # Core slide generation logic
+│   └── pptx_utils.py        # PowerPoint manipulation utilities
+├── requirements.txt         # Project dependencies
+├── README.md                # This file
+└── USER_GUIDE.md            # End-user documentation
+```
 
 ## Features
 
-- **Markdown to PowerPoint Conversion**: Quickly turn your Markdown documents into professional presentations
-- **PowerPoint Enhancement**: Automatically improve the design, content, structure, and formatting of your presentations
+- **Markdown to PowerPoint Conversion**: Transform Markdown documents into professional presentations
+- **PowerPoint Enhancement**: Improve design, content, structure, and formatting of existing presentations
+- **AI-generated Speaker Notes**: Add context-aware speaker notes to your slides
+- **AI-generated Images**: Create relevant images for your slides using Stability AI or DeepSeek
 
 ## Installation
 
@@ -29,107 +62,133 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Set up your OpenAI API key
+4. Set up your API keys (optional but recommended for full functionality)
 ```bash
-export OPENAI_API_KEY="your-api-key"  # On Windows: set OPENAI_API_KEY="your-api-key"
+export OPENAI_API_KEY="your-openai-api-key"
+export STABILITY_API_KEY="your-stability-api-key"  
+export DEEPSEEK_API_KEY="your-deepseek-api-key"
 ```
 
 ## Usage
 
-### Option 1: Agentic Implementation (CrewAI + Streamlit)
+### Option 1: Flask Web Applications
 
-This implementation uses CrewAI for the backend logic and Streamlit for the user interface.
+These are straightforward web applications that provide intuitive interfaces for creating and enhancing presentations.
 
-#### Start the Streamlit App
+#### Markdown to PowerPoint Converter
+
+This application converts Markdown documents into PowerPoint presentations. It leverages the core functionality in [`lib/slide_generator.py`](lib/slide_generator.py).
 
 ```bash
-# 
+# Start the Markdown to PowerPoint web application
+python flask_apps/markdown2pptx_webapp.py
+```
+
+The server will start on http://127.0.0.1:5002. Open this URL in your browser to use the application.
+
+#### PowerPoint Enhancement Tool
+
+This application improves existing PowerPoint presentations by enhancing design, content, and structure.
+
+```bash
+# Start the PowerPoint Enhancement web application
+python flask_apps/pptx_enhancement_webapp.py
+```
+
+The server will start on http://127.0.0.1:5003. Open this URL in your browser to use the application.
+
+### Option 2: Agentic Implementation (CrewAI + Streamlit)
+
+This implementation uses an agent-based approach with CrewAI for more sophisticated presentation creation and enhancement.
+
+```bash
+# Start the Streamlit application
 streamlit run agentic/app.py
 ```
 
-The application will open in your default web browser.
+The application will open in your default web browser at http://localhost:8501.
 
-#### Markdown to PowerPoint
+#### How It Works
 
-1. Select the "Markdown to PowerPoint" tab
-2. Upload a Markdown file or paste your Markdown content in the text area
-3. Configure presentation settings (theme, color scheme, etc.)
-4. Click "Generate PowerPoint" to create your presentation
-5. Download the generated PowerPoint file
+The agentic implementation uses specialized AI agents that collaborate to create better presentations:
 
-#### PowerPoint Enhancement
+1. **Content Agent** ([`agentic/agents/content_agent.py`](agentic/agents/content_agent.py)): Refines and enriches your content
+2. **Designer Agent** ([`agentic/agents/designer_agent.py`](agentic/agents/designer_agent.py)): Handles visual design aspects
+3. **Formatter Agent** ([`agentic/agents/formatter_agent.py`](agentic/agents/formatter_agent.py)): Ensures consistent formatting
 
-1. Select the "PowerPoint Enhancement" tab
-2. Upload a PowerPoint (.pptx) file
-3. Select enhancement options (visuals, content, structure, formatting)
-4. Adjust the enhancement level and add any specific instructions
-5. Click "Enhance PowerPoint" to improve your presentation
-6. Download the enhanced PowerPoint file
+These agents work together in crews ([`agentic/crews/`](agentic/crews/)) to complete complex presentation tasks.
 
-### Option 2: Flask Web Application
+## API Reference
 
-This is a traditional web application implementation using Flask.
+### Flask API Endpoints
 
-#### Start the Flask Server
+Both Flask applications expose API endpoints:
 
-```bash
-cd src/slideup
-python flask_app/app.py
-```
+- `POST /api/convert`: Convert Markdown to PowerPoint
+  ```python
+  # Example request
+  import requests
+  
+  response = requests.post(
+      "http://127.0.0.1:5002/api/convert",
+      json={
+          "markdown": "### Slide 1: Title\n* First point",
+          "add_speaker_notes": True,
+          "add_images": True
+      }
+  )
+  
+  # Save the returned PPTX
+  with open("output.pptx", "wb") as f:
+      f.write(response.content)
+  ```
 
-The server will start on http://localhost:5000 (or the port specified in the app).
-
-#### Using the Web Interface
-
-1. Open your browser and navigate to http://localhost:5000
-2. Choose from the available tools:
-   - "Convert Markdown to PowerPoint": Upload or paste Markdown and set options
-   - "Enhance PowerPoint": Upload a PowerPoint file and select enhancement options
-3. Submit your request and download the resulting file when processing is complete
-
-#### API Endpoints
-
-The Flask implementation also provides API endpoints:
-
-- `POST /api/markdown-to-pptx`: Convert Markdown to PowerPoint
-- `POST /api/enhance-pptx`: Enhance an existing PowerPoint file
-
-See API documentation within the app for request and response formats.
+- `POST /api/enhance`: Enhance an existing PowerPoint
+  ```python
+  # Example request
+  import requests
+  
+  with open("presentation.pptx", "rb") as f:
+      files = {"file": f}
+      response = requests.post(
+          "http://127.0.0.1:5003/api/enhance",
+          files=files,
+          data={"enhance_content": "true", "enhance_design": "true"}
+      )
+  
+  # Save the enhanced PPTX
+  with open("enhanced.pptx", "wb") as f:
+      f.write(response.content)
+  ```
 
 ## Development
-
-### Project Structure
-
-- `agentic/`: CrewAI-based implementation
-  - `app.py`: Streamlit application
-  - `crews/`: AI crew implementations
-    - `markdown2pptx_crew.py`: Markdown to PowerPoint conversion crew
-    - `pptx_enhancement_crew.py`: PowerPoint enhancement crew
-  - `utils/`: Utility functions
-  - `tests/`: Test files
-
-- `flask_app/`: Flask-based implementation
-  - `app.py`: Flask application server
-  - `services/`: Service modules for processing
-  - `templates/`: HTML templates
-  - `static/`: CSS, JavaScript, and static assets
 
 ### Running Tests
 
 ```bash
-cd src/slideup
-python -m unittest discover agentic/tests
+# Run all tests
+pytest
+
+# Run tests for specific components
+pytest tests/test_slide_generator.py
+pytest tests/agentic/
 ```
 
-## Requirements
+### Core Modules
 
-- Python 3.8+
-- Streamlit (for agentic implementation)
-- Flask (for web app implementation)
-- python-pptx
-- CrewAI
-- LangChain
-- OpenAI API key
+- [`lib/slide_generator.py`](lib/slide_generator.py): The core slide generation engine
+- [`lib/ai_services.py`](lib/ai_services.py): Interfaces with OpenAI, Stability AI, and DeepSeek APIs
+- [`agentic/crews/markdown2pptx_crew.py`](agentic/crews/markdown2pptx_crew.py): Agent-based Markdown conversion
+
+### Contributing
+
+Contributions are welcome! Check out the [contributing guidelines](CONTRIBUTING.md) for more information.
+
+## Resources
+
+- [User Guide](USER_GUIDE.md): Detailed guide for end users
+- [CrewAI Documentation](https://github.com/joaomdmoura/crewAI)
+- [python-pptx Documentation](https://python-pptx.readthedocs.io/)
 
 ## License
 
