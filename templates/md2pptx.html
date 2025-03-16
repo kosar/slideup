@@ -228,6 +228,16 @@
         .help-link:hover {
             text-decoration: underline;
         }
+
+        .fallback-prompt.inactive {
+            color: #666;
+            background-color: #f5f5f5;
+        }
+        .fallback-indicator {
+            font-size: 0.9em;
+            color: #666;
+            font-style: italic;
+        }
     </style>
     
     <script>
@@ -311,6 +321,9 @@
                 data.stability_key_set ? '<small>(Server key available)</small>' : '';
             document.getElementById('deepseekEnvKeyStatus').innerHTML = 
                 data.deepseek_key_set ? '<small>(Server key available)</small>' : '';
+            
+            // Call updatePromptStyles after checking server keys
+            updatePromptStyles(data.deepseek_key_set);
         } catch (e) {
             console.error("Failed to check server API keys:", e);
         }
@@ -450,6 +463,23 @@
             }
         });
     }
+
+    function updatePromptStyles(serverKeyAvailable = false) {
+        const deepseekKey = document.getElementById('deepseekApiKey').value;
+        const deepseekPrompt = document.getElementById('deepseekPrompt').value;
+        const stabilityPrompt = document.getElementById('stabilityPrompt');
+        
+        // Check if either the server has a DeepSeek key or user has provided one
+        if ((serverKeyAvailable || deepseekKey) && deepseekPrompt) {
+            stabilityPrompt.classList.add('inactive');
+        } else {
+            stabilityPrompt.classList.remove('inactive');
+        }
+    }
+
+    // Add event listeners for both fields
+    document.getElementById('deepseekApiKey').addEventListener('input', () => updatePromptStyles());
+    document.getElementById('deepseekPrompt').addEventListener('input', () => updatePromptStyles());
     </script>
 </head>
 <body>
@@ -493,8 +523,8 @@
                     </div>
                 </div>
                 
-                <label for="stabilityPrompt">Image Generation Prompt:</label>
-                <textarea id="stabilityPrompt" rows="6" style="width: 100%;">Create a conceptual visualization using abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content. Explore color symbolism and metaphorical representations. Avoid realistic objects or scenes. Focus on conveying the underlying ideas. DO NOT include text, numbers, or literal interpretations. Only abstract visual elements. BLUR TEXT in your images if generated. COMPOSITION: Create a balanced, harmonious composition. Use symmetry, contrast, and focal points to guide the viewer's eye. No sexuality or nudity or suggestive content. No text in the image. No violence or gore.</textarea>
+                <label for="stabilityPrompt">Image Generation Prompt: <span class="fallback-indicator">(Fallback when DeepSeek is unavailable)</span></label>
+                <textarea id="stabilityPrompt" class="fallback-prompt" rows="6" style="width: 100%;">Create a conceptual visualization using abstract, symbolic imagery. Use dynamic shapes, flowing lines, and vibrant colors to convey the essence of the content. Explore color symbolism and metaphorical representations. Avoid realistic objects or scenes. Focus on conveying the underlying ideas. DO NOT include text, numbers, or literal interpretations. Only abstract visual elements. BLUR TEXT in your images if generated. COMPOSITION: Create a balanced, harmonious composition. Use symmetry, contrast, and focal points to guide the viewer's eye. No sexuality or nudity or suggestive content. No text in the image. No violence or gore.</textarea>
                 
                 <label for="deepseekPrompt">DeepSeek Prompt Engineer Instructions:</label>
                 <textarea id="deepseekPrompt" rows="6" style="width: 100%;">You are a creative prompt engineer for AI image generation. Create VISUAL, ABSTRACT prompts for business concepts based on the content provided as context, with these rules:
