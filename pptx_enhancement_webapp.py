@@ -3,7 +3,7 @@ import time
 import uuid
 import threading
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for
 from werkzeug.utils import secure_filename
 import signal
 import atexit
@@ -18,36 +18,50 @@ app = Flask(__name__, template_folder='templates')
 # A simple dictionary to track jobs
 jobs = {}
 
+# Global flags and resources
+is_shutting_down = False
+cleanup_lock = threading.Lock()
+active_threads = set()
+
 # Directory for generated files
 GENERATED_FILES_DIR = os.path.join(os.getcwd(), 'generated_files')
-if not os.path.exists(GENERATED_FILES_DIR):
-    os.makedirs(GENERATED_FILES_DIR)
 
-# Cleanup function to remove temporary files
-def cleanup_files():
-    print("Cleaning up temporary files in", GENERATED_FILES_DIR)
-    if os.path.exists(GENERATED_FILES_DIR):
-        try:
-            shutil.rmtree(GENERATED_FILES_DIR)
-            os.makedirs(GENERATED_FILES_DIR)
-        except Exception as e:
-            print("Error cleaning up temporary files:", e)
+def init_app():
+    """Initialize the application and create necessary directories."""
+    if not os.path.exists(GENERATED_FILES_DIR):
+        os.makedirs(GENERATED_FILES_DIR)
 
-# Register cleanup function for normal exit
-atexit.register(cleanup_files)
-
-# Robust signal handler for SIGINT and SIGTERM
-def shutdown_handler(signal_received, frame):
-    cleanup_files()
-    exit(0)
-
-signal.signal(signal.SIGINT, shutdown_handler)
-signal.signal(signal.SIGTERM, shutdown_handler)
+def cleanup_resources():
+    """Clean up resources during shutdown."""
+    global is_shutting_down
+    
+    with cleanup_lock:
+        if is_shutting_down:
+            return
+        is_shutting_down = True
+    
+    try:
+        # Clean up the generated files directory if it exists
+        if os.path.exists(GENERATED_FILES_DIR):
+            try:
+                shutil.rmtree(GENERATED_FILES_DIR, ignore_errors=True)
+                print("[DEBUG] Cleaned up generated files directory")
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up directory: {e}")
+    except Exception as e:
+        print(f"[ERROR] Cleanup error: {e}")
 
 @app.route('/env_keys_check', methods=['GET'])
 def env_keys_check():
     """Return a JSON object indicating which API keys are set in environment variables."""
     return check_env_keys()
+
+@app.route('/')
+def index():
+    """
+    Redirect root URL to the enhance page
+    """
+    return redirect(url_for('enhance_page'))
 
 @app.route('/enhance', methods=['GET'])
 def enhance_page():
@@ -58,174 +72,74 @@ def enhance_page():
 
 @app.route('/enhance/upload', methods=['POST'])
 def upload_pptx():
-    """
-    Receive the PPTX file, store optional API keys, and start the enhancement process.
-    Return a JSON response with a session_id for tracking.
-    """
-    # Store original environment variables
-    original_env = store_original_env()
-
+    """Handle PPTX file upload and start enhancement process."""
+    session_id = str(uuid.uuid4())
+    
+    # Initialize job tracking
+    jobs[session_id] = {
+        "status": "queued",
+        "logs": [],
+        "start_time": None,
+        "end_time": None,
+        "elapsed_time": 0
+    }
+    
     try:
-        # Optional: override environment variables if form fields are set
-        openai_key = request.form.get('OPENAI_API_KEY', '')
-        stability_key = request.form.get('STABILITY_API_KEY', '')
-        deepseek_key = request.form.get('DEEPSEEK_API_KEY', '')
-        stability_prompt = request.form.get('stability_prompt', '')  # Get the custom stability prompt
-        deepseek_prompt = request.form.get('deepseek_prompt', '')  # Get the custom deepseek prompt
+        # Store original environment
+        original_env = store_original_env()
+        jobs[session_id]['original_env'] = original_env
         
-        if openai_key:
-            os.environ['OPENAI_API_KEY'] = openai_key
-        if stability_key:
-            os.environ['STABILITY_API_KEY'] = stability_key
-        if deepseek_key:
-            os.environ['DEEPSEEK_API_KEY'] = deepseek_key
-
-        # Debug log
-        print(f"[DEBUG] Form data keys: {list(request.form.keys())}")
-        print(f"[DEBUG] Files keys: {list(request.files.keys())}")
-
-        if 'pptx_file' not in request.files or request.files['pptx_file'].filename == '':
-            # Restore original environment variables before returning
-            restore_env(original_env)
-            print("[ERROR] No PPTX file provided")
-            return jsonify({"error": "No PPTX file provided"}), 400
-
+        # Get API keys and update environment
+        for key, env_var in {
+            'OPENAI_API_KEY': 'OPENAI_API_KEY',
+            'STABILITY_API_KEY': 'STABILITY_API_KEY',
+            'DEEPSEEK_API_KEY': 'DEEPSEEK_API_KEY'
+        }.items():
+            if value := request.form.get(key, ''):
+                os.environ[env_var] = value
+        
+        # Get custom prompts
+        stability_prompt = request.form.get('stability_prompt', '')
+        deepseek_prompt = request.form.get('deepseek_prompt', '')
+        jobs[session_id].update({
+            'stability_prompt': stability_prompt,
+            'deepseek_prompt': deepseek_prompt
+        })
+        
+        # Handle file upload
+        if 'pptx_file' not in request.files or not request.files['pptx_file'].filename:
+            raise ValueError("No PPTX file provided")
+        
         pptx_file = request.files['pptx_file']
         filename = secure_filename(pptx_file.filename)
-        
-        # Check if GENERATED_FILES_DIR exists, create if not
-        if not os.path.exists(GENERATED_FILES_DIR):
-            os.makedirs(GENERATED_FILES_DIR)
-            print(f"[DEBUG] Created directory: {GENERATED_FILES_DIR}")
-        
-        session_id = str(uuid.uuid4())
-        jobs[session_id] = {
-            "status": "queued",
-            "logs": [],
-            "start_time": None,
-            "end_time": None,
-            "file_path": "",
-            "output_file": "",
-            "elapsed_time": 0,
-            "stability_prompt": stability_prompt,
-            "deepseek_prompt": deepseek_prompt,
-            "original_env": original_env
-        }
-        jobs[session_id]['orig_filename'] = filename
-        jobs[session_id]['logs'].append(f"Received file: {filename}")
-
-        # Save uploaded PPTX
         saved_path = os.path.join(GENERATED_FILES_DIR, f"{session_id}_{filename}")
+        
         try:
             pptx_file.save(saved_path)
-            jobs[session_id]['file_path'] = saved_path
-            jobs[session_id]['logs'].append(f"File saved successfully to {saved_path}")
-            print(f"[DEBUG] File saved to {saved_path}")
-            
-            # Check if file exists after saving
             if not os.path.exists(saved_path):
                 raise FileNotFoundError(f"Failed to save file at {saved_path}")
-                
         except Exception as e:
-            print(f"[ERROR] File save error: {str(e)}")
-            jobs[session_id]['logs'].append(f"Error saving file: {str(e)}")
-            jobs[session_id]['status'] = "failed"
-            return jsonify({"error": f"Failed to save uploaded file: {str(e)}"}), 500
-
-        # Spin off a thread to enhance
-        try:
-            t = threading.Thread(target=enhance_pptx_thread, args=(session_id,))
-            t.start()
-            print(f"[DEBUG] Started enhancement thread for session {session_id}")
-            return jsonify({"session_id": session_id})
-        except Exception as e:
-            print(f"[ERROR] Thread start error: {str(e)}")
-            jobs[session_id]['logs'].append(f"Error starting enhancement process: {str(e)}")
-            jobs[session_id]['status'] = "failed"
-            return jsonify({"error": f"Failed to start enhancement process: {str(e)}"}), 500
-            
-    except Exception as e:
-        # Restore environment variables if there was an error
-        restore_env(original_env)
-        print(f"[ERROR] Unhandled exception in upload_pptx: {str(e)}")
-        return jsonify({"error": f"Server error: {str(e)}"}), 500
-
-def enhance_pptx_thread(session_id):
-    """
-    Thread function that handles the actual enhancement process.
-    """
-    try:
-        print(f"[DEBUG] Starting enhancement for session {session_id}")
-        jobs[session_id]['status'] = "running"
-        jobs[session_id]['start_time'] = time.time()
-
-        saved_path = jobs[session_id]['file_path']
-        orig_filename = jobs[session_id]['orig_filename']
-        filename_base, _ = os.path.splitext(orig_filename)
-        output_file = os.path.join(GENERATED_FILES_DIR, f"{filename_base}_enhanced.pptx")
-        jobs[session_id]['output_file'] = output_file
-        stability_prompt = jobs[session_id].get('stability_prompt', None)
-
-        logs = jobs[session_id]['logs']
-        logs.append("=== Enhancement Process Starting ===")
-        logs.append("Enhancement in progress. Please wait...")
+            raise ValueError(f"Failed to save uploaded file: {e}")
         
-        # Import here to avoid circular imports
-        try:
-            from pptx2enhancedpptx import enhance_pptx
-            
-            # Verify that the input file exists before processing
-            if not os.path.exists(saved_path):
-                raise FileNotFoundError(f"Input file not found: {saved_path}")
-                
-            # Pass the custom prompt to the enhance_pptx function
-            enhance_pptx(saved_path, output_file, stability_prompt=stability_prompt)
-            
-            # Verify the output file was created
-            if not os.path.exists(output_file):
-                raise FileNotFoundError(f"Output file was not created: {output_file}")
-                
-            time.sleep(2)
-            total_time = time.time() - jobs[session_id]['start_time']
-            logs.append("=== Enhancement Process Completed ===")
-            logs.append(f"Total Execution Time: {total_time:.2f} seconds")
-            jobs[session_id]['status'] = "complete"
-            
-        except ImportError as e:
-            logs.append(f"Error: Module pptx2enhancedpptx not found. {str(e)}")
-            jobs[session_id]['status'] = "failed"
-            print(f"[ERROR] Import error: {str(e)}")
-            
-        except FileNotFoundError as e:
-            logs.append(f"Error: {str(e)}")
-            jobs[session_id]['status'] = "failed"
-            print(f"[ERROR] File error: {str(e)}")
-            
-        except Exception as e:
-            import traceback
-            debug_info = traceback.format_exc()
-            logs.append("Error during enhancement: " + str(e))
-            logs.append("Debug info: " + debug_info)
-            jobs[session_id]['status'] = "failed"
-            print(f"[ERROR] Enhancement error: {str(e)}")
-            print(debug_info)
-            
+        # Update job tracking
+        jobs[session_id].update({
+            'file_path': saved_path,
+            'orig_filename': filename
+        })
+        
+        # Start enhancement thread
+        t = threading.Thread(target=enhance_pptx_thread, args=(session_id,))
+        t.daemon = True
+        active_threads.add(t)
+        t.start()
+        
+        return jsonify({"session_id": session_id})
+        
     except Exception as e:
-        print(f"[ERROR] Unhandled exception in enhance_pptx_thread: {str(e)}")
         if session_id in jobs:
             jobs[session_id]['status'] = "failed"
-            jobs[session_id]['logs'].append(f"Unhandled error: {str(e)}")
-    finally:
-        # Restore original environment variables
-        if session_id in jobs and 'original_env' in jobs[session_id]:
-            restore_env(jobs[session_id]['original_env'])
-            # Remove sensitive data
-            del jobs[session_id]['original_env']
-
-        if session_id in jobs:
-            jobs[session_id]['end_time'] = time.time()
-            if jobs[session_id]['start_time'] is not None:  # Check to avoid errors
-                jobs[session_id]['elapsed_time'] = jobs[session_id]['end_time'] - jobs[session_id]['start_time']
+            jobs[session_id]['error'] = str(e)
+        return jsonify({"error": str(e)}), 400
 
 @app.route('/enhance/status/<session_id>', methods=['GET'])
 def status(session_id):
@@ -288,6 +202,96 @@ def help_page():
     """
     return render_template('help.html')
 
+def enhance_pptx_thread(session_id):
+    """Thread function that handles the actual enhancement process."""
+    try:
+        jobs[session_id]['status'] = "running"
+        jobs[session_id]['start_time'] = time.time()
+
+        saved_path = jobs[session_id]['file_path']
+        orig_filename = jobs[session_id]['orig_filename']
+        filename_base, _ = os.path.splitext(orig_filename)
+        output_file = os.path.join(GENERATED_FILES_DIR, f"{filename_base}_enhanced.pptx")
+        jobs[session_id]['output_file'] = output_file
+        stability_prompt = jobs[session_id].get('stability_prompt', None)
+
+        # Import here to avoid circular imports
+        from pptx2enhancedpptx import enhance_pptx
+        
+        if not os.path.exists(saved_path):
+            raise FileNotFoundError(f"Input file not found: {saved_path}")
+            
+        # Pass the custom prompt to the enhance_pptx function
+        enhance_pptx(saved_path, output_file, stability_prompt=stability_prompt)
+        
+        if not os.path.exists(output_file):
+            raise FileNotFoundError(f"Output file was not created: {output_file}")
+            
+        jobs[session_id]['status'] = "complete"
+        
+    except Exception as e:
+        print(f"[ERROR] Enhancement error: {str(e)}")
+        jobs[session_id]['status'] = "failed"
+        jobs[session_id]['error'] = str(e)
+    finally:
+        # Calculate elapsed time
+        if jobs[session_id]['start_time'] is not None:
+            jobs[session_id]['end_time'] = time.time()
+            jobs[session_id]['elapsed_time'] = jobs[session_id]['end_time'] - jobs[session_id]['start_time']
+        
+        # Remove thread from registry
+        current = threading.current_thread()
+        if current in active_threads:
+            active_threads.remove(current)
+        
+        # Restore environment variables
+        if 'original_env' in jobs[session_id]:
+            restore_env(jobs[session_id]['original_env'])
+            del jobs[session_id]['original_env']
+
+def signal_handler(sig, frame):
+    """Handle shutdown signals gracefully."""
+    global is_shutting_down
+    if not is_shutting_down:  # Only handle signal once
+        print("\n[DEBUG] Signal received. Cleaning up and exiting...")
+        cleanup_resources()
+        # Force exit all threads immediately
+        print("[DEBUG] Force exiting...")
+        os._exit(0)
+
 if __name__ == '__main__':
-    print("[INFO] Starting PPTX enhancement webapp")
-    app.run(debug=True, port=5003)
+    # Register the signal handler for SIGINT (Ctrl+C) and SIGTERM
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        print("[INFO] Starting PPTX enhancement webapp")
+        print("[INFO] Main index page will be available at: http://localhost:5003/enhance")
+        print("[INFO] Help page will be available at: http://localhost:5003/help")
+        
+        # Initialize the app
+        with app.app_context():
+            init_app()
+        
+        # Run without debug mode and reloader to ensure clean shutdown
+        app.run(
+            host='127.0.0.1',
+            port=5003,
+            debug=False,
+            use_reloader=False,
+            threaded=True
+        )
+    except KeyboardInterrupt:
+        print("\n[INFO] Shutting down gracefully...")
+        cleanup_resources()
+        os._exit(0)
+    except Exception as e:
+        print(f"[ERROR] Server error: {e}")
+        cleanup_resources()
+        os._exit(1)
+
+@app.teardown_appcontext
+def teardown_app_context(exception):
+    """Clean up resources when the application context ends."""
+    if not is_shutting_down:
+        cleanup_resources()
