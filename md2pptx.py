@@ -15,6 +15,7 @@ from stability_sdk import client
 import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
 import io
 import requests
+from pptx.dml.color import RGBColor
 
 # Define the directory to store all generated and temporary files
 GENERATED_FILES_DIR = os.path.join(os.getcwd(), 'generated_files')
@@ -77,13 +78,13 @@ def parse_markdown(file_path):
         
         for line in lines[1:]:
             # Original reference detection that works
-            if re.match(r'\* \*\*References:\*\*', line):
+            if re.match(r'^\s*-\s*\*\*references:\*\*', line, re.I):
                 collecting_references = True
                 continue
                 
             if collecting_references:
                 # Original reference parsing that worked
-                ref_match = re.match(r'\s*\* \[(.*)\]\((.*)\)', line)
+                ref_match = re.match(r'\s*\*\s*\[(.*)\]\((.*)\)', line)
                 if ref_match:
                     current_slide['references'].append({
                         'text': ref_match.group(1).strip(),
@@ -685,7 +686,11 @@ def create_presentation(slides, output_path, add_notes=False, add_images_stabili
                     p = tf.add_paragraph()
                     run = p.add_run()
                     run.text = ref['text']
+                    # Set up the hyperlink properly
                     run.hyperlink.address = ref['url']
+                    # Style the hyperlink
+                    run.font.underline = True
+                    run.font.color.rgb = RGBColor(0, 0, 255)  # Blue color for links
                     p.font.size = Pt(10)
 
             # Add slide number (new) to the bottom right corner
