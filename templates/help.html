@@ -216,6 +216,72 @@
                 margin: 0 0.5rem;
             }
         }
+        
+        /* Add these new styles in the style section */
+        .markdown-example {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1.5rem;
+            border-radius: 8px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+            white-space: pre;
+        }
+
+        .markdown-example .slide-separator {
+            color: #569cd6;
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+        }
+
+        .markdown-example .markdown-comment {
+            color: #608b4e;
+        }
+
+        .markdown-example .markdown-bold {
+            color: #ce9178;
+        }
+
+        .markdown-example .markdown-bullet {
+            color: #b5cea8;
+        }
+
+        .code-hint {
+            display: inline-block;
+            background-color: #f8f9fa;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            color: #e83e8c;
+            font-size: 0.9em;
+            border: 1px solid #dee2e6;
+        }
+
+        .rule-card {
+            background-color: #ffffff;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .rule-card h5 {
+            color: #495057;
+            margin-bottom: 0.5rem;
+            font-size: 1.1em;
+        }
+
+        .rule-card .example {
+            background-color: #f8f9fa;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+        /* End of new styles */
     </style>
 </head>
 <body>
@@ -262,35 +328,93 @@
                 </ol>
                 
                 <h3>Markdown Format</h3>
-                <p>The Markdown to PPTX tool expects a specific format to generate well-structured presentations:</p>
+                <p>The Markdown to PPTX tool uses a specific format to ensure your presentations are structured correctly. Here's a comprehensive example:</p>
                 
-                <div class="code-block">
-# Main Presentation Title
+                <pre class="markdown-example">
+<span class="markdown-comment"># Main Presentation Title</span>
 
-### Slide 1: Title Slide
-- **title:** Your Presentation Title
-- **subtitle:** Optional Subtitle
+<span class="slide-separator">### Slide 1: Title Slide</span>
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**title:**</span> Your Main Presentation Title
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**subtitle:**</span> Your Subtitle Here
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**presenter:**</span> John Doe
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**date:**</span> March 16, 2024
+
+<span class="slide-separator">### Slide 2: Introduction</span>
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**text:**</span>
+  <span class="markdown-bullet">*</span> First level bullet point
+  <span class="markdown-bullet">*</span> Another main point
+    <span class="markdown-bullet">*</span> Sub-bullet point (indent with 2 spaces)
+    <span class="markdown-bullet">*</span> Another sub-point
+  <span class="markdown-bullet">*</span> Back to main points
+  <span class="markdown-bullet">*</span> Text with <span class="markdown-bold">**bold**</span> formatting
+
+<span class="slide-separator">### Slide 3: Content with References</span>
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**text:**</span>
+  <span class="markdown-bullet">*</span> Main point with reference
+<span class="markdown-bullet">-</span> <span class="markdown-bold">**references:**</span>
+  <span class="markdown-bullet">*</span> [Link Title](https://example.com)
+  <span class="markdown-bullet">*</span> [Another Source](https://example.org)</pre>
+
+                <div class="formatting-rules">
+                    <h4>Formatting Rules</h4>
+                    
+                    <div class="rule-card">
+                        <h5>1. Slide Headers</h5>
+                        <p>Each slide must start with a header using three hash symbols:</p>
+                        <div class="example">### Slide 1: Your Slide Title</div>
+                    </div>
+
+                    <div class="rule-card">
+                        <h5>2. Title Slide Format</h5>
+                        <p>The title slide requires specific fields:</p>
+                        <div class="example">
+- **title:** Your Title
+- **subtitle:** Your Subtitle
 - **presenter:** Your Name
-- **date:** Presentation Date
+- **date:** Presentation Date</div>
+                    </div>
 
-### Slide 2: Content Slide
-- **text:** 
-  * First bullet point
-  * Second bullet point
-  * Third bullet point with **bold** text
-</div>
-                
-                <h3>Advanced Settings</h3>
-                <p>
-                    The advanced settings section provides additional customization options:
-                </p>
-                
-                <ul>
-                    <li><strong>API Keys</strong>: You can provide your own API keys for OpenAI, Stability AI, and DeepSeek.</li>
-                    <li><strong>Image Generation Prompt</strong>: Customize the prompt used for generating images.</li>
-                    <li><strong>DeepSeek Prompt Engineer Instructions</strong>: Fine-tune instructions for the DeepSeek AI.</li>
-                    <li><strong>Speaker Notes Generation Prompt</strong>: Customize how speaker notes are generated.</li>
-                </ul>
+                    <div class="rule-card">
+                        <h5>3. Content Slide Structure</h5>
+                        <p>Content slides use the text field followed by bullet points:</p>
+                        <div class="example">
+- **text:**
+  * Main point
+  * Another point
+    * Sub-point (2 space indent)
+    * Another sub-point</div>
+                    </div>
+
+                    <div class="rule-card">
+                        <h5>4. Text Formatting</h5>
+                        <p>Use markdown syntax for text formatting:</p>
+                        <div class="example">
+* Regular text
+* Text with **bold** emphasis
+* A point with **multiple** bold **words**</div>
+                    </div>
+
+                    <div class="rule-card">
+                        <h5>5. Adding References</h5>
+                        <p>References can be added using the references field:</p>
+                        <div class="example">
+- **text:**
+  * Point with reference
+- **references:**
+  * [Link Text](https://example.com)</div>
+                    </div>
+                </div>
+
+                <div class="card note">
+                    <h4>Pro Tips:</h4>
+                    <ul>
+                        <li>Use consistent indentation (2 spaces) for sub-points</li>
+                        <li>Keep bullet points concise and clear</li>
+                        <li>Number your slides sequentially</li>
+                        <li>Test with a small presentation first</li>
+                        <li>You can copy the example above and modify it for your needs</li>
+                    </ul>
+                </div>
             </div>
             
             <h2>PPTX Enhancer Web App</h2>
