@@ -1,9 +1,11 @@
-# SlideUp AI
+# SlideUp
 
 A presentation assistant powered by AI that helps you create and improve PowerPoint presentations. This project offers two separate implementations:
 
 1. **Agentic Implementation**: Using CrewAI framework with a Streamlit interface
 2. **Flask Implementation**: Traditional web applications using Flask
+
+![SlideUp Interface](screenshot1)
 
 ## Repository Structure
 
@@ -38,31 +40,44 @@ slideup/
 
 ## Features
 
-- **Markdown to PowerPoint Conversion**: Transform Markdown documents into professional presentations
-- **PowerPoint Enhancement**: Improve design, content, structure, and formatting of existing presentations
-- **AI-generated Speaker Notes**: Add context-aware speaker notes to your slides
-- **AI-generated Images**: Create relevant images for your slides using Stability AI or DeepSeek
+* **AI-Powered Enhancement:**
+  * Intelligent image generation using Stability AI
+  * Natural speaker notes generation with OpenAI
+  * Smart prompt engineering with DeepSeek
+  * Custom prompt support for specialized needs
+
+* **User-Friendly Interface:**
+  * Simple Markdown input
+  * Real-time preview
+  * Progress tracking
+  * Multiple export options
+
+* **Professional Output:**
+  * Clean, modern slide designs
+  * Consistent styling
+  * Proper formatting
+  * Reference management
 
 ## Installation
 
-1. Clone the repository
+1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/slideup.git
+git clone https://github.com/kosarjaff/slideup.git
 cd slideup
 ```
 
-2. Create a virtual environment and activate it
+2. Create a virtual environment and activate it:
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-3. Install the dependencies
+3. Install the dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Set up your API keys (optional but recommended for full functionality)
+4. Set up your API keys (optional but recommended for full functionality):
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
 export STABILITY_API_KEY="your-stability-api-key"  
@@ -161,6 +176,40 @@ Both Flask applications expose API endpoints:
       f.write(response.content)
   ```
 
+## Markdown Format
+
+SlideUp uses a simple Markdown format for creating presentations:
+
+```markdown
+### Slide 1: Title Slide
+* **title:** Your Title
+* **subtitle:** Your Subtitle
+* **presenter:** Your Name
+* **date:** Presentation Date
+
+### Slide 2: Content Slide
+* Main point
+* Another point
+  * Sub-point (indent with 2 spaces)
+  * Another sub-point
+* Back to main points
+* Text with **bold** formatting
+
+### Slide 3: Content with References
+* Main point with reference
+- **references:**
+  * [Link Title](https://example.com)
+  * [Another Source](https://example.org)
+```
+
+Key formatting rules:
+1. Each slide must start with `### Slide X: Title`
+2. Title slides require specific fields: `title`, `subtitle`, `presenter`, and `date`
+3. Content slides use bullet points with `*` or `-` for main points
+4. References must be in a separate section starting with `- **references:**`
+5. Use 2 spaces for indentation of sub-points
+6. Bold text is supported using `**text**`
+
 ## Development
 
 ### Running Tests
@@ -192,4 +241,12 @@ Contributions are welcome! Check out the [contributing guidelines](CONTRIBUTING.
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+* [python-pptx](https://python-pptx.readthedocs.io/) for PowerPoint generation
+* [Flask](https://flask.palletsprojects.com/) for the web framework
+* [Stability AI](https://stability.ai/) for image generation
+* [OpenAI](https://openai.com/) for speaker notes generation
+* [DeepSeek](https://deepseek.ai/) for prompt engineering
