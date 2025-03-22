@@ -71,57 +71,89 @@
 * **Modern Technical Foundation**
   * Built on a modern, robust technical foundation:
   * **Backend Architecture:**
-    * Python 3.x for core functionality
-    * Flask web framework for API endpoints
-    * python-pptx for PowerPoint generation
-    * Integration with multiple AI services
+    * Python 3.11+ for core functionality
+    * Flask 3.0+ web framework with RESTful API endpoints
+    * python-pptx 0.6.23 for PowerPoint generation
+    * Integration with multiple AI services (OpenAI, Stability, DeepSeek)
+    * SQLite for local data persistence
+    * AsyncIO for concurrent processing
   * **Frontend Design:**
     * Clean, responsive HTML5/CSS3 interface
-    * Dynamic JavaScript interactions
-    * Bootstrap for consistent styling
-    * Real-time status updates
+    * Dynamic JavaScript with modern ES6+ features
+    * Bootstrap 5.3 for consistent styling
+    * Real-time status updates via WebSocket
+    * Progressive Web App capabilities
+  * **Development Tools:**
+    * Poetry for dependency management
+    * Pytest for comprehensive testing
+    * Black for code formatting
+    * MyPy for type checking
+    * GitHub Actions for CI/CD
 
 ### Slide 8: Experimental Agent Framework
 * **Exploring AI-Driven Architecture**
   * An experimental branch of SlideUp explores the potential of AI agents working together:
   * **Agent-Based Architecture:**
-    * Content Analyzer: Analyzes markdown structure and content
-    * Slide Designer: Creates visual layouts and designs
-    * Presentation Builder: Constructs the final presentation
+    * Content Analyzer: Analyzes markdown structure and content using advanced NLP
+    * Slide Designer: Creates visual layouts and designs with AI-powered composition
+    * Presentation Builder: Constructs the final presentation with intelligent formatting
   * **CrewAI Integration:**
-    * Sequential task processing
-    * Inter-agent communication
-    * Dynamic content enhancement
+    * Sequential task processing with context preservation
+    * Inter-agent communication through structured prompts
+    * Dynamic content enhancement based on slide context
   * **Current Status:**
-    * Prototype implementation
-    * Testing with various content types
-    * Performance optimization in progress
+    * Prototype implementation with CrewAI framework
+    * Testing with various content types and presentation styles
+    * Performance optimization and agent coordination improvements
+    * Integration with existing markdown parser and PPTX generator
 
 ### Slide 9: Agent Framework Benefits
 * **Advantages of Agent-Based Approach**
-  * The experimental agent framework offers several potential benefits:
+  * The experimental agent framework offers several key advantages:
   * **Enhanced Intelligence:**
-    * More sophisticated content analysis
-    * Context-aware slide design
-    * Dynamic content adaptation
+    * Context-aware content analysis using advanced NLP models
+    * AI-driven slide design with visual hierarchy optimization
+    * Dynamic content adaptation based on presentation context
+    * Smart formatting and layout suggestions
   * **Improved Flexibility:**
-    * Modular agent system
-    * Easy to add new capabilities
-    * Customizable workflows
+    * Modular agent system with plug-and-play capabilities
+    * Easy integration of new AI models and services
+    * Customizable workflows for different presentation styles
+    * Extensible architecture for future enhancements
   * **Future Potential:**
-    * Multi-agent collaboration
-    * Advanced content generation
-    * Real-time presentation enhancement
+    * Multi-agent collaboration for complex presentations
+    * Advanced content generation with style consistency
+    * Real-time presentation enhancement during editing
+    * Integration with external AI services and APIs
 
 ### Slide 10: Future Development
 * **Exciting Roadmap Ahead**
   * The roadmap for SlideUp includes exciting new features and capabilities:
   * **Planned Enhancements:**
     * Advanced AI capabilities for content generation
+      - GPT-4 integration for smarter content analysis
+      - DALL-E 3 for high-quality image generation
+      - Claude for advanced text processing
     * Support for additional export formats
+      - PDF with speaker notes
+      - HTML5 web presentations
+      - Interactive web slides
     * Customizable template system
+      - Theme builder with color schemes
+      - Layout customization
+      - Brand asset integration
     * Collaborative presentation features
+      - Real-time multi-user editing
+      - Comments and feedback system
+      - Version control and history
     * Extensible plugin architecture
+      - Custom AI model integration
+      - Third-party service connectors
+      - Custom export formats
+  * **Timeline:**
+    * Q2 2024: Enhanced AI capabilities and template system
+    * Q3 2024: Collaborative features and plugin architecture
+    * Q4 2024: Additional export formats and enterprise features
 
 ### Slide 11: Thank You
 * **Get Involved with SlideUp**
@@ -132,44 +164,72 @@
     * Follow us for updates and new features
 
 ### Slide 12: References
-* **SlideUp GitHub Repository:** A central hub for accessing the SlideUp project, including source code and contributions.
-* **User Guide:** Comprehensive documentation to help users navigate and utilize SlideUp effectively.
-* **API Documentation:** Detailed information on the API endpoints available for integration and usage.
-* **python-pptx Documentation:** Official documentation for the python-pptx library, which is used for PowerPoint generation.
-* **Flask Documentation:** Resources and guides for using the Flask web framework, which powers the backend of SlideUp.
-* **Stability AI Documentation:** Information on the Stability AI service, which is integrated for generating contextual visuals.
+* **Core Technologies and Resources**
+  * Essential documentation and resources for SlideUp development and usage
+  * **Documentation:**
+    * [python-pptx Documentation](https://python-pptx.readthedocs.io/) - PowerPoint file generation
+    * [Flask Documentation](https://flask.palletsprojects.com/) - Web framework
+    * [CrewAI Documentation](https://docs.crewai.com/) - Agent framework
+    * [Stability AI API](https://stability.ai/docs) - Image generation
+    * [OpenAI API](https://platform.openai.com/docs) - Content generation
+    * [DeepSeek AI](https://deepseek.ai/docs) - Prompt engineering
+  * **Project Resources:**
+    * [SlideUp GitHub Repository](https://github.com/kosar/slideup)
+    * [User Guide](https://github.com/kosar/slideup/blob/main/User%20Guide.md)
+    * [API Documentation](https://github.com/kosar/slideup/blob/main/API.md)
+    * [Contributing Guidelines](https://github.com/kosar/slideup/blob/main/CONTRIBUTING.md)
+  * **Related Projects:**
+    * [Marp](https://marp.app/) - Markdown presentation ecosystem
+    * [Reveal.js](https://revealjs.com/) - HTML presentation framework
+    * [Slidev](https://sli.dev/) - Vue-based presentation framework
 
 - **references:**
   * [python-pptx Documentation](https://python-pptx.readthedocs.io/)
   * [Flask Documentation](https://flask.palletsprojects.com/)
-  * [Stability AI Documentation](https://stability.ai/docs) 
-
+  * [CrewAI Documentation](https://docs.crewai.com/)
+  * [Stability AI API](https://stability.ai/docs)
+  * [OpenAI API](https://platform.openai.com/docs)
+  * [DeepSeek AI](https://deepseek.ai/docs)
+  * [SlideUp GitHub Repository](https://github.com/kosar/slideup)
+  * [User Guide](https://github.com/kosar/slideup/blob/main/User%20Guide.md)
+  * [API Documentation](https://github.com/kosar/slideup/blob/main/API.md)
+  * [Contributing Guidelines](https://github.com/kosar/slideup/blob/main/CONTRIBUTING.md)
+  * [Marp](https://marp.app/)
+  * [Reveal.js](https://revealjs.com/)
+  * [Slidev](https://sli.dev/)
 
 ### Slide 13: Frequently Asked Questions
-* **What is SlideUp?**
-  * SlideUp is an AI-powered presentation assistant that helps users create and enhance PowerPoint presentations from Markdown files.
+* **What makes SlideUp different from other presentation tools?**
+  * SlideUp combines the simplicity of Markdown with powerful AI capabilities, offering a unique hybrid approach that sets it apart from traditional presentation tools.
 
-* **How do I convert Markdown to PowerPoint using SlideUp?**
-  * You can use the Flask web application or the Streamlit app to upload your Markdown file, and SlideUp will generate a PowerPoint presentation for you.
+* **How does the AI integration work?**
+  * SlideUp uses multiple AI services:
+    - DeepSeek for intelligent prompt engineering
+    - Stability AI for contextual image generation
+    - OpenAI for natural speaker notes
+    - CrewAI for advanced content analysis
 
-* **What features does SlideUp offer?**
-  * SlideUp offers features like AI-generated speaker notes, image generation, and multiple export options for presentations.
+* **What are the system requirements?**
+  * Python 3.11+, modern web browser, and optional API keys for AI features. The tool works on Windows, macOS, and Linux.
 
-* **Is there a way to enhance existing PowerPoint presentations?**
-  * Yes, SlideUp provides functionality to enhance existing PPTX files by improving design, content, and structure.
+* **Can I use my own templates?**
+  * Yes, SlideUp supports custom templates through the markdown format. Future versions will include a visual template builder.
 
-* **What programming languages and frameworks are used in SlideUp?**
-  * SlideUp is built using Python 3.x, Flask for the backend, and utilizes the python-pptx library for PowerPoint generation.
+* **How do I contribute to the project?**
+  * Visit our GitHub repository, read the contributing guidelines, and submit pull requests. We welcome contributions in all areas.
 
-* **Can I customize the templates used in SlideUp?**
-  * Future enhancements will include a customizable template system, allowing users to tailor the look and feel of their presentations.
+* **What's the difference between the Flask and Agent implementations?**
+  * The Flask version is a traditional web app, while the Agent version uses AI agents for more intelligent content processing and presentation design.
 
-* **How can I get involved with the SlideUp project?**
-  * You can contribute to the project by visiting our GitHub repository, providing feedback, or collaborating on new features.
+* **Is there an API available?**
+  * Yes, SlideUp provides a RESTful API for programmatic access to all features, including AI-powered enhancements.
 
-* **Where can I find the documentation for SlideUp?**
-  * Comprehensive documentation is available in the User Guide, API documentation, and through links to relevant libraries like python-pptx and Flask.
-  
+* **What's the roadmap for future development?**
+  * We're planning enhanced AI capabilities, collaborative features, additional export formats, and a plugin system in the coming quarters.
+
+* **How can I get support?**
+  * Support is available through GitHub issues, documentation, and community forums. Enterprise support options are coming soon.
+
 * **Why did you build this when there are 10 such apps available?**
-  * The goal of SlideUp is to illustrate how to infuse powerful AI into programs, simplifying the process and making it easier to build rich tools quickly. By leveraging AI, we aim to enhance user experience and streamline the creation of presentations, setting SlideUp apart from existing solutions.
+  * SlideUp demonstrates how to effectively integrate multiple AI services into a practical application, making it a valuable reference for developers building AI-powered tools.
 
