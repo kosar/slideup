@@ -174,3 +174,6 @@ cython_debug/
 generated_files/
 resources/
 =0.4.0
+
+podcast2video/podcast_env/
+podcast2video/input.wav
