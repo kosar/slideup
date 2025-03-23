@@ -177,3 +177,7 @@ resources/
 
 podcast2video/podcast_env/
 podcast2video/input.wav
+podcast2video/transcripts/
+podcast2video/temp/
+podcast2video/test_resources/
+podcast2video/test_output.mp4

@@ -12,14 +12,19 @@ import signal
 import sys
 import atexit
 import logging
+import threading
 from pathlib import Path
+import traceback
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 # Set up logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("podcast2video.log")  # Also log to file
     ]
 )
 logger = logging.getLogger('podcast2video')
@@ -29,14 +34,70 @@ current_operation = "initializing"
 is_cancelling = False
 temp_files = []
 start_time = time.time()
+last_progress_time = time.time()  # For tracking progress updates
+progress_thread = None
 
 # Debug function
 def debug_point(message, level=logging.DEBUG):
     """Log debug information with consistent formatting"""
     logger.log(level, f"DEBUG: {message}")
     # Also track current operation
-    global current_operation
+    global current_operation, last_progress_time
     current_operation = message
+    last_progress_time = time.time()
+
+# Progress monitoring thread
+def start_progress_monitoring(interval=10):
+    """Start a thread to periodically report progress"""
+    def monitor_progress():
+        global last_progress_time
+        last_report = ""
+        
+        while not is_cancelling:
+            time.sleep(interval)
+            elapsed = time.time() - start_time
+            if last_report != current_operation:
+                print(f"Status after {elapsed:.1f}s: {current_operation}")
+                last_report = current_operation
+                
+            # Check for potential hanging
+            time_since_update = time.time() - last_progress_time
+            if time_since_update > interval * 2:
+                print(f"WARNING: No progress updates for {time_since_update:.1f}s while: {current_operation}")
+                
+    thread = threading.Thread(target=monitor_progress, daemon=True)
+    thread.start()
+    return thread
+
+# Function with timeout
+def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="operation"):
+    """Run a function with a timeout to prevent hanging"""
+    result = [None]
+    exception = [None]
+    is_finished = [False]
+    
+    def target():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
+        finally:
+            is_finished[0] = True
+    
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join(timeout_seconds)
+    
+    if thread.is_alive():
+        print(f"\nWARNING: {description} is taking longer than {timeout_seconds} seconds")
+        print(f"Still running: {current_operation}")
+        print(f"This might indicate the operation is stuck or just taking a long time.")
+        return None, TimeoutError(f"{description} exceeded {timeout_seconds}s timeout")
+    
+    if exception[0]:
+        return None, exception[0]
+        
+    return result[0], None
 
 # Import required modules
 try:
@@ -148,6 +209,50 @@ def check_cancel():
     if is_cancelling:
         raise KeyboardInterrupt("Operation cancelled by user")
 
+# Test API connectivity before using it
+def test_api_connection(client, api_type="openai"):
+    """Test API connectivity with a simple request"""
+    debug_point(f"Testing {api_type} API connection")
+    try:
+        if api_type.lower() == "openai":
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo", 
+                messages=[{"role": "user", "content": "Hello"}],
+                max_tokens=5
+            )
+            logger.info(f"OpenAI API test successful: {response.choices[0].message.content}")
+            return True
+        elif api_type.lower() == "deepseek":
+            # Try multiple potential DeepSeek model names in case of API changes
+            potential_models = ["deepseek-llm", "deepseek-chat", "deepseek-coder"]
+            
+            for model in potential_models:
+                try:
+                    logger.info(f"Trying DeepSeek model: {model}")
+                    response = client.chat.completions.create(
+                        model=model, 
+                        messages=[{"role": "user", "content": "Hello"}],
+                        max_tokens=5
+                    )
+                    logger.info(f"DeepSeek API test successful with model {model}: {response.choices[0].message.content}")
+                    # Update the global chat_model variable to use the working model
+                    global chat_model
+                    chat_model = model
+                    return True
+                except Exception as model_error:
+                    logger.warning(f"DeepSeek model {model} failed: {model_error}")
+                    continue
+            
+            # If we've tried all models and none worked
+            logger.error("All DeepSeek models failed the test")
+            return False
+        else:
+            logger.warning(f"Unknown API type: {api_type}")
+            return False
+    except Exception as e:
+        logger.error(f"API test failed for {api_type}: {e}")
+        return False
+
 # Initialize clients - add debug information
 try:
     debug_point("Initializing API clients")
@@ -164,6 +269,10 @@ try:
     else:
         logger.info("DEEPSEEK_API_KEY not found in environment")
     
+    # Initialize the AI client based on available keys
+    ai_client = None
+    api_type = None
+    
     # Use DeepSeek if available, otherwise fallback to OpenAI
     if deepseek_api_key:
         debug_point("Initializing DeepSeek client")
@@ -174,27 +283,52 @@ try:
                 api_key=deepseek_api_key,
                 base_url="https://api.deepseek.com/v1"
             )
-            chat_model = "deepseek-v3"
-            embedding_model = "deepseek-v3-embedding"
+            chat_model = "deepseek-llm"
+            embedding_model = "deepseek-embedding"
+            api_type = "deepseek"
             logger.info("Using DeepSeek API for language models")
+            
+            # Test DeepSeek API immediately
+            if not test_api_connection(ai_client, api_type):
+                logger.warning("DeepSeek API test failed. Falling back to OpenAI if available.")
+                # Reset client if test failed
+                ai_client = None
+                api_type = None
+                
+                # If OpenAI is available, try that instead
+                if openai_api_key:
+                    logger.info("Falling back to OpenAI API")
+                else:
+                    logger.error("Both DeepSeek test failed and no OpenAI API key available")
+            
         except ImportError:
             logger.error("OpenAI library not installed. Run: pip install openai")
             raise
-    else:
-        if not openai_api_key:
-            logger.error("No API keys available - both OPENAI_API_KEY and DEEPSEEK_API_KEY are missing")
-        else:
-            debug_point("Initializing OpenAI client")
-            try:
-                # Check if OpenAI library is installed
-                from openai import OpenAI
-                ai_client = OpenAI(api_key=openai_api_key)
-                chat_model = "gpt-4o"
-                embedding_model = "text-embedding-3-large"
-                logger.info("Using OpenAI API for language models")
-            except ImportError:
-                logger.error("OpenAI library not installed. Run: pip install openai")
-                raise
+    
+    # If DeepSeek initialization failed or not available, try OpenAI
+    if ai_client is None and openai_api_key:
+        debug_point("Initializing OpenAI client")
+        try:
+            # Check if OpenAI library is installed
+            from openai import OpenAI
+            ai_client = OpenAI(api_key=openai_api_key)
+            chat_model = "gpt-4o"
+            embedding_model = "text-embedding-3-large"
+            api_type = "openai"
+            logger.info("Using OpenAI API for language models")
+            
+            # Test OpenAI API
+            if not test_api_connection(ai_client, api_type):
+                logger.warning("OpenAI API test failed. API may not be working correctly.")
+                # Keep the client but warn the user
+        except ImportError:
+            logger.error("OpenAI library not installed. Run: pip install openai")
+            raise
+    
+    # If still no working client
+    if ai_client is None:
+        logger.error("No API clients could be initialized - both OPENAI_API_KEY and DEEPSEEK_API_KEY are missing or invalid")
+        
 except Exception as e:
     logger.error(f"Error initializing API clients: {e}", exc_info=True)
 
@@ -213,6 +347,15 @@ try:
                     verbose=True
                 )
                 logger.info("Stability API initialized successfully")
+                
+                # Quick test of Stability API
+                try:
+                    debug_point("Testing Stability API connection")
+                    # Make a minimal request to test connectivity
+                    stability_api.generate(prompt="test", width=64, height=64, steps=1, samples=1)
+                    logger.info("Stability API test successful")
+                except Exception as e:
+                    logger.warning(f"Stability API test failed: {e}")
             except ImportError:
                 logger.error("Stability SDK not installed. Run: pip install stability-sdk")
                 stability_api = None
@@ -356,7 +499,8 @@ def normalize_audio_for_transcription(audio_file_path, temp_dir):
             debug_point(f"Reading WAV: {audio_file_path}")
             audio = AudioSegment.from_wav(audio_file_path)
             debug_point(f"Exporting MP3: {mp3_path}")
-            audio.export(mp3_path, format="mp3", bitrate="192k")
+            # Use lower bitrate to reduce file size (128k instead of 192k)
+            audio.export(mp3_path, format="mp3", bitrate="128k")
             logger.info(f"Converted to MP3: {mp3_path}")
             return mp3_path
         except Exception as e:
@@ -366,6 +510,72 @@ def normalize_audio_for_transcription(audio_file_path, temp_dir):
     
     # Fallback for other formats (shouldn't reach here due to validation)
     return audio_file_path
+
+def split_audio_file(audio_file_path, temp_dir, max_size_bytes=25*1024*1024, chunk_duration_ms=600000):
+    """Split large audio file into smaller chunks that fit within API size limits
+    
+    Args:
+        audio_file_path: Path to the audio file to split
+        temp_dir: Directory to save the chunks
+        max_size_bytes: Maximum size in bytes for each chunk (default: 25MB)
+        chunk_duration_ms: Maximum duration in ms for each chunk (default: 10 minutes)
+        
+    Returns:
+        List of paths to the audio chunks
+    """
+    debug_point(f"Splitting large audio file: {audio_file_path}")
+    
+    # Check file size
+    file_size = os.path.getsize(audio_file_path)
+    if file_size <= max_size_bytes:
+        logger.info(f"Audio file is already under size limit ({file_size} bytes), no splitting needed")
+        return [audio_file_path]
+    
+    logger.info(f"Audio file exceeds size limit ({file_size} bytes), splitting into chunks")
+    
+    # Load the audio file
+    file_ext = os.path.splitext(audio_file_path)[1].lower()
+    try:
+        if file_ext == '.mp3':
+            audio = AudioSegment.from_mp3(audio_file_path)
+        elif file_ext == '.wav':
+            audio = AudioSegment.from_wav(audio_file_path)
+        else:
+            logger.error(f"Unsupported format for splitting: {file_ext}")
+            return [audio_file_path]
+    except Exception as e:
+        logger.error(f"Error loading audio for splitting: {e}")
+        return [audio_file_path]
+    
+    # Get length of audio in milliseconds
+    audio_length_ms = len(audio)
+    
+    # Calculate number of chunks
+    num_chunks = max(1, int(audio_length_ms / chunk_duration_ms) + 1)
+    logger.info(f"Splitting {audio_length_ms/1000:.2f} seconds audio into {num_chunks} chunks")
+    
+    # Split audio into chunks
+    chunk_paths = []
+    base_filename = os.path.splitext(os.path.basename(audio_file_path))[0]
+    
+    for i in range(num_chunks):
+        start_ms = i * chunk_duration_ms
+        end_ms = min((i + 1) * chunk_duration_ms, audio_length_ms)
+        
+        if start_ms >= audio_length_ms:
+            break
+            
+        chunk = audio[start_ms:end_ms]
+        chunk_path = os.path.join(temp_dir, f"{base_filename}_chunk_{i+1}.mp3")
+        
+        # Export as MP3 with lower bitrate to ensure small file size
+        chunk.export(chunk_path, format="mp3", bitrate="96k")
+        chunk_size = os.path.getsize(chunk_path)
+        
+        logger.info(f"Created chunk {i+1}/{num_chunks}: {chunk_path} ({chunk_size} bytes, {(end_ms-start_ms)/1000:.2f} seconds)")
+        chunk_paths.append(chunk_path)
+    
+    return chunk_paths
 
 def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp"):
     """Transcribe the podcast audio using Whisper model with appropriate API"""
@@ -470,49 +680,151 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
     # Allow cancellation before starting API call
     check_cancel()
     
-    with open(normalized_audio_path, "rb") as audio_file:
-        try:
-            if deepseek_api_key:
-                # Use DeepSeek's equivalent for audio transcription if available
-                try:
-                    transcript = ai_client.audio.transcriptions.create(
-                        model="deepseek-whisper",
-                        file=audio_file,
-                        response_format="verbose_json"
-                    )
-                except Exception as e:
-                    print(f"DeepSeek transcription failed: {e}. Falling back to OpenAI.")
-                    # Fallback to OpenAI if DeepSeek doesn't support the format
-                    if not get_user_confirmation(
-                        "DeepSeek transcription failed. Fall back to OpenAI Whisper (may incur additional costs)?",
-                        default=True,
-                        non_interactive=non_interactive
-                    ):
-                        print("Transcription cancelled by user.")
-                        return None
-                    
-                    temp_client = OpenAI(api_key=openai_api_key)
-                    transcript = temp_client.audio.transcriptions.create(
+    # Check if we need to split the audio file due to size
+    audio_size = os.path.getsize(normalized_audio_path)
+    max_api_size = 25 * 1024 * 1024  # 25MB to be safe (API limit is ~26MB)
+    
+    if audio_size > max_api_size:
+        logger.info(f"Audio file size ({audio_size} bytes) exceeds API limit, splitting into chunks")
+        audio_chunks = split_audio_file(normalized_audio_path, temp_dir)
+        logger.info(f"Split audio into {len(audio_chunks)} chunks")
+    else:
+        audio_chunks = [normalized_audio_path]
+        
+    # Process each audio chunk
+    all_transcripts = []
+    combined_transcript = {"segments": []}
+    time_offset = 0
+    
+    for chunk_idx, chunk_path in enumerate(audio_chunks):
+        logger.info(f"Processing audio chunk {chunk_idx+1}/{len(audio_chunks)}: {chunk_path}")
+        
+        # If we have multiple chunks, recalculate duration of this chunk for accurate time offsets
+        if len(audio_chunks) > 1:
+            try:
+                # Get duration of this chunk
+                file_ext = os.path.splitext(chunk_path)[1].lower()
+                if file_ext == '.mp3':
+                    chunk_audio = AudioSegment.from_mp3(chunk_path)
+                elif file_ext == '.wav':
+                    chunk_audio = AudioSegment.from_wav(chunk_path)
+                chunk_duration_sec = len(chunk_audio) / 1000.0
+                logger.info(f"Chunk {chunk_idx+1} duration: {chunk_duration_sec:.2f} seconds, time offset: {time_offset:.2f} seconds")
+            except Exception as e:
+                logger.error(f"Error getting chunk duration: {e}")
+                chunk_duration_sec = 0
+        
+        # Transcribe this chunk
+        with open(chunk_path, "rb") as audio_file:
+            try:
+                if api_type == "deepseek":
+                    # Use DeepSeek for audio transcription
+                    try:
+                        # Confirm with user before using DeepSeek for transcription
+                        if not force and not non_interactive and chunk_idx == 0:
+                            if not get_user_confirmation(
+                                "OpenAI API key not found. Use DeepSeek for transcription?",
+                                default=True
+                            ):
+                                print("Transcription cancelled by user.")
+                                return None
+                                
+                        # Try different potential audio models
+                        audio_models = ["deepseek-audio", "deepseek-whisper", "whisper-1"]
+                        transcription_success = False
+                        
+                        for audio_model in audio_models:
+                            try:
+                                logger.info(f"Attempting transcription with model: {audio_model}")
+                                chunk_transcript = ai_client.audio.transcriptions.create(
+                                    model=audio_model,
+                                    file=audio_file,
+                                    response_format="verbose_json"
+                                )
+                                logger.info(f"DeepSeek transcription completed successfully with model {audio_model}")
+                                transcription_success = True
+                                break
+                            except Exception as audio_error:
+                                logger.warning(f"Transcription with model {audio_model} failed: {audio_error}")
+                                continue
+                        
+                        if not transcription_success:
+                            logger.error("All DeepSeek audio models failed")
+                            raise Exception("DeepSeek transcription failed with all models")
+                    except Exception as e:
+                        logger.error(f"DeepSeek transcription failed: {e}")
+                        if openai_api_key:
+                            # Fallback to OpenAI if DeepSeek fails and OpenAI key is available
+                            if not get_user_confirmation(
+                                "DeepSeek transcription failed. Fall back to OpenAI Whisper (may incur additional costs)?",
+                                default=True,
+                                non_interactive=non_interactive
+                            ):
+                                print("Transcription cancelled by user.")
+                                return None
+                            
+                            logger.info("Falling back to OpenAI for transcription")
+                            temp_client = OpenAI(api_key=openai_api_key)
+                            chunk_transcript = temp_client.audio.transcriptions.create(
+                                model="whisper-1",
+                                file=audio_file,
+                                response_format="verbose_json"
+                            )
+                        else:
+                            logger.error("DeepSeek transcription failed and no OpenAI fallback available")
+                            print("Transcription failed. No API keys available.")
+                            return None
+                else:
+                    # Use OpenAI for transcription (default)
+                    chunk_transcript = ai_client.audio.transcriptions.create(
                         model="whisper-1",
                         file=audio_file,
                         response_format="verbose_json"
                     )
-            else:
-                transcript = ai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="verbose_json"
-                )
-            
-            # Check for cancellation after API call
-            check_cancel()
-            
-        except KeyboardInterrupt:
-            print("Transcription cancelled during API call")
-            return None
-        except Exception as e:
-            print(f"Error during transcription: {e}")
-            return None
+                
+                all_transcripts.append(chunk_transcript)
+                
+                # Adjust timestamps for this chunk and add to combined transcript
+                if len(audio_chunks) > 1:
+                    for segment in chunk_transcript.segments:
+                        # Convert segment to a dictionary for JSON serialization
+                        segment_dict = {
+                            "start": segment.start + time_offset if hasattr(segment, 'start') else 0 + time_offset,
+                            "end": segment.end + time_offset if hasattr(segment, 'end') else 0 + time_offset,
+                            "text": segment.text if hasattr(segment, 'text') else ""
+                        }
+                        combined_transcript["segments"].append(segment_dict)
+                    
+                    # Update time offset for the next chunk
+                    time_offset += chunk_duration_sec
+                else:
+                    # If only one chunk, convert the transcript to a serializable format
+                    combined_transcript = {"segments": []}
+                    if hasattr(chunk_transcript, 'segments'):
+                        for segment in chunk_transcript.segments:
+                            segment_dict = {
+                                "start": segment.start if hasattr(segment, 'start') else 0,
+                                "end": segment.end if hasattr(segment, 'end') else 0,
+                                "text": segment.text if hasattr(segment, 'text') else ""
+                            }
+                            combined_transcript["segments"].append(segment_dict)
+                    else:
+                        logger.warning("Transcript does not have segments attribute")
+                
+                # Check for cancellation after API call
+                check_cancel()
+                
+            except KeyboardInterrupt:
+                print("Transcription cancelled during API call")
+                return None
+            except Exception as e:
+                print(f"Error during transcription of chunk {chunk_idx+1}: {e}")
+                # If this is the only chunk, return None; otherwise continue with remaining chunks
+                if len(audio_chunks) == 1:
+                    return None
+    
+    # Use the combined transcript as our final result
+    transcript = combined_transcript
     
     # Generate subtitle files
     srt_path, vtt_path = generate_subtitles(transcript, normalized_audio_path)
@@ -522,6 +834,7 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
         check_cancel()
         
         with open(cache_paths["json"], "w") as f:
+            # Ensure we're saving a JSON-serializable object
             json.dump(transcript, f)
         
         with open(cache_paths["srt"], "w") as f:
@@ -574,28 +887,106 @@ def generate_subtitles(transcript, audio_file_path):
     srt_path = Path(audio_file_path).with_suffix('.srt')
     vtt_path = Path(audio_file_path).with_suffix('.vtt')
     
+    # Handle different types of transcript objects
+    try:
+        # Try to access segments as an attribute (TranscriptionVerbose object)
+        if hasattr(transcript, 'segments'):
+            transcript_segments = transcript.segments
+        # Try to access as a dictionary key
+        elif isinstance(transcript, dict) and "segments" in transcript:
+            transcript_segments = transcript["segments"]
+        else:
+            # If neither works, try to convert to dict first
+            try:
+                transcript_dict = transcript if isinstance(transcript, dict) else transcript.__dict__
+                transcript_segments = transcript_dict.get("segments", [])
+            except:
+                logger.error("Failed to extract segments from transcript in generate_subtitles")
+                return "", ""
+                
+        logger.info(f"Found {len(transcript_segments)} segments in transcript")
+    except Exception as e:
+        logger.error(f"Error extracting segments from transcript: {e}")
+        return "", ""
+    
     with open(srt_path, 'w', encoding='utf-8') as srt_file:
-        for i, segment in enumerate(transcript.segments):
+        for i, segment in enumerate(transcript_segments):
             # Format timestamp for SRT (HH:MM:SS,mmm)
-            start_time = format_timestamp(segment.start)
-            end_time = format_timestamp(segment.end)
-            
-            # Write SRT entry
-            srt_file.write(f"{i+1}\n")
-            srt_file.write(f"{start_time} --> {end_time}\n")
-            srt_file.write(f"{segment.text.strip()}\n\n")
+            try:
+                # Get start time, trying different ways
+                if hasattr(segment, 'start'):
+                    start = segment.start
+                elif isinstance(segment, dict) and "start" in segment:
+                    start = segment["start"]
+                else:
+                    start = 0
+                    
+                # Get end time, trying different ways
+                if hasattr(segment, 'end'):
+                    end = segment.end
+                elif isinstance(segment, dict) and "end" in segment:
+                    end = segment["end"]
+                else:
+                    end = 0
+                    
+                # Get text, trying different ways
+                if hasattr(segment, 'text'):
+                    text = segment.text
+                elif isinstance(segment, dict) and "text" in segment:
+                    text = segment["text"]
+                else:
+                    text = ""
+                
+                start_time = format_timestamp(start)
+                end_time = format_timestamp(end)
+                
+                # Write SRT entry
+                srt_file.write(f"{i+1}\n")
+                srt_file.write(f"{start_time} --> {end_time}\n")
+                srt_file.write(f"{text.strip()}\n\n")
+            except Exception as e:
+                logger.error(f"Error processing segment {i}: {e}")
+                continue
     
     # Also create WebVTT format
     with open(vtt_path, 'w', encoding='utf-8') as vtt_file:
         vtt_file.write("WEBVTT\n\n")
-        for i, segment in enumerate(transcript.segments):
-            # Format timestamp for VTT (HH:MM:SS.mmm)
-            start_time = format_timestamp(segment.start, vtt=True)
-            end_time = format_timestamp(segment.end, vtt=True)
-            
-            # Write VTT entry
-            vtt_file.write(f"{start_time} --> {end_time}\n")
-            vtt_file.write(f"{segment.text.strip()}\n\n")
+        for i, segment in enumerate(transcript_segments):
+            try:
+                # Get start time, trying different ways
+                if hasattr(segment, 'start'):
+                    start = segment.start
+                elif isinstance(segment, dict) and "start" in segment:
+                    start = segment["start"]
+                else:
+                    start = 0
+                    
+                # Get end time, trying different ways
+                if hasattr(segment, 'end'):
+                    end = segment.end
+                elif isinstance(segment, dict) and "end" in segment:
+                    end = segment["end"]
+                else:
+                    end = 0
+                    
+                # Get text, trying different ways
+                if hasattr(segment, 'text'):
+                    text = segment.text
+                elif isinstance(segment, dict) and "text" in segment:
+                    text = segment["text"]
+                else:
+                    text = ""
+                
+                # Format timestamp for VTT (HH:MM:SS.mmm)
+                start_time = format_timestamp(start, vtt=True)
+                end_time = format_timestamp(end, vtt=True)
+                
+                # Write VTT entry
+                vtt_file.write(f"{start_time} --> {end_time}\n")
+                vtt_file.write(f"{text.strip()}\n\n")
+            except Exception as e:
+                logger.error(f"Error processing segment for VTT {i}: {e}")
+                continue
     
     print(f"Subtitle files generated: {srt_path} and {vtt_path}")
     return str(srt_path), str(vtt_path)
@@ -620,14 +1011,61 @@ def extract_segments(transcript, min_segment_duration=10, max_segment_duration=3
     segments = []
     current_segment = {"text": "", "start": None, "end": None}
     
-    for segment in transcript.segments:
+    # Handle different types of transcript objects
+    try:
+        # Try to access segments as an attribute (TranscriptionVerbose object)
+        if hasattr(transcript, 'segments'):
+            transcript_segments = transcript.segments
+        # Try to access as a dictionary key
+        elif isinstance(transcript, dict) and "segments" in transcript:
+            transcript_segments = transcript["segments"]
+        else:
+            # If neither works, try to convert to dict first
+            try:
+                transcript_dict = transcript if isinstance(transcript, dict) else transcript.__dict__
+                transcript_segments = transcript_dict.get("segments", [])
+            except:
+                logger.error("Failed to extract segments from transcript in extract_segments")
+                return []
+                
+        logger.info(f"Processing {len(transcript_segments)} segments for extraction")
+    except Exception as e:
+        logger.error(f"Error accessing segments in extract_segments: {e}")
+        return []
+    
+    for segment in transcript_segments:
+        # Get properties safely depending on the type of segment
+        if hasattr(segment, 'start'):
+            start_time = segment.start
+        elif isinstance(segment, dict) and "start" in segment:
+            start_time = segment["start"]
+        else:
+            logger.warning("Segment missing start time, skipping")
+            continue
+            
+        if hasattr(segment, 'end'):
+            end_time = segment.end
+        elif isinstance(segment, dict) and "end" in segment:
+            end_time = segment["end"]
+        else:
+            logger.warning("Segment missing end time, skipping")
+            continue
+            
+        if hasattr(segment, 'text'):
+            text = segment.text
+        elif isinstance(segment, dict) and "text" in segment:
+            text = segment["text"]
+        else:
+            logger.warning("Segment missing text, skipping")
+            continue
+        
         if current_segment["start"] is None:
-            current_segment["start"] = segment.start
+            current_segment["start"] = start_time
         
-        current_segment["text"] += " " + segment.text
-        current_segment["end"] = segment.end
+        current_segment["text"] += " " + text
+        current_segment["end"] = end_time
         
-        segment_duration = segment.end - current_segment["start"]
+        segment_duration = end_time - current_segment["start"]
         
         # If segment is long enough and contains a complete thought (ends with punctuation)
         if segment_duration >= min_segment_duration and re.search(r'[.!?]$', current_segment["text"].strip()):
@@ -638,10 +1076,11 @@ def extract_segments(transcript, min_segment_duration=10, max_segment_duration=3
             segments.append(current_segment)
             current_segment = {"text": "", "start": None, "end": None}
     
-    # Add the last segment if not empty
-    if current_segment["text"] and current_segment["start"] is not None:
+    # Add the last segment if it's not empty
+    if current_segment["start"] is not None:
         segments.append(current_segment)
     
+    print(f"Extracted {len(segments)} meaningful segments")
     return segments
 
 def enhance_segments(segments):
@@ -1080,21 +1519,21 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
     clips = []
     
     # Add main background image
-    main_bg = ImageClip(segment["main_image"]).set_duration(segment_duration)
-    main_bg = main_bg.resize(width=1920)  # Resize for 1080p video
+    main_bg = ImageClip(segment["main_image"]).with_duration(segment_duration)
+    main_bg = main_bg.resized(width=1920)  # Resize for 1080p video
     clips.append(main_bg)
     
     # Add caption text
     if "caption" in segment and segment["caption"]:
         caption_txt = TextClip(
-            segment["caption"], 
-            fontsize=36, 
+            text=segment["caption"], 
+            font_size=36, 
             color='white',
-            bg_color='rgba(0,0,0,0.5)',
-            font='Arial-Bold',
+            bg_color='black',
+            font='Arial',
             size=(1800, None),
             method='caption'
-        ).set_position(('center', 100)).set_duration(segment_duration)
+        ).with_position(('center', 100)).with_duration(segment_duration)
         clips.append(caption_txt)
     
     # Add key elements with images and descriptions
@@ -1107,35 +1546,35 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
             
             # Create element image
             try:
-                elem_img = ImageClip(img_path).set_start(element_start).set_duration(element_duration)
-                elem_img = elem_img.resize(width=640)  # Smaller size for element images
+                elem_img = ImageClip(img_path).with_duration(element_duration).with_start(element_start)
+                elem_img = elem_img.resized(width=640)  # Smaller size for element images
                 
                 # Position in the right side
-                elem_img = elem_img.set_position(('right', 180))
+                elem_img = elem_img.with_position(('right', 180))
                 clips.append(elem_img)
                 
                 # Add element name (title)
                 name_txt = TextClip(
-                    f"{element['name']}", 
-                    fontsize=28, 
+                    text=f"{element['name']}", 
+                    font_size=28, 
                     color='white',
-                    bg_color='rgba(0,0,0,0.7)',
-                    font='Arial-Bold',
+                    bg_color='black',
+                    font='Arial',
                     size=(620, None),
                     method='caption'
-                ).set_position(('right', 180 + elem_img.size[1] + 10)).set_start(element_start).set_duration(element_duration)
+                ).with_position(('right', 180 + elem_img.size[1] + 10)).with_start(element_start).with_duration(element_duration)
                 clips.append(name_txt)
                 
                 # Add element description below the name
                 desc_txt = TextClip(
-                    f"{element.get('description', element.get('visual_caption', ''))}",
-                    fontsize=22, 
+                    text=f"{element.get('description', element.get('visual_caption', ''))}",
+                    font_size=22, 
                     color='white',
-                    bg_color='rgba(0,0,0,0.6)',
+                    bg_color='black',
                     font='Arial',
                     size=(620, None),
                     method='caption'
-                ).set_position(('right', 180 + elem_img.size[1] + 50)).set_start(element_start).set_duration(element_duration)
+                ).with_position(('right', 180 + elem_img.size[1] + 50)).with_start(element_start).with_duration(element_duration)
                 clips.append(desc_txt)
             except Exception as e:
                 print(f"Error adding element image: {e}")
@@ -1165,17 +1604,17 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
                     
                     # Create subtitle text clip
                     sub_txt = TextClip(
-                        sub["text"], 
-                        fontsize=24, 
+                        text=sub["text"], 
+                        font_size=24, 
                         color='white',
-                        bg_color='rgba(0,0,0,0.7)',
+                        bg_color='black',
                         font='Arial',
                         size=(1800, None),
                         method='caption'
-                    ).set_start(rel_start).set_duration(rel_end - rel_start)
+                    ).with_start(rel_start).with_duration(rel_end - rel_start)
                     
                     # Position at bottom of screen
-                    sub_txt = sub_txt.set_position(('center', 'bottom'))
+                    sub_txt = sub_txt.with_position(('center', 'bottom'))
                     clips.append(sub_txt)
             except Exception as e:
                 print(f"Error adding subtitles: {e}")
@@ -1307,7 +1746,7 @@ def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
             video_clip = VideoFileClip(video_file, audio=False)
             
             # Set position in the timeline
-            video_clip = video_clip.set_start(segment["start"])
+            video_clip = video_clip.with_start(segment["start"])
             
             # Add transitions if specified
             transition_style = segment.get("transition_style", "cut")
@@ -1331,7 +1770,7 @@ def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
         final_video = concatenate_videoclips(clips, method="compose")
         
         # Add original audio
-        final_video = final_video.set_audio(audio)
+        final_video = final_video.with_audio(audio)
         
         # Add any final overlays or effects
         
@@ -1342,39 +1781,50 @@ def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
         
         final_video.write_videofile(output_path, fps=24, codec='libx264')
         
-        # Also create a version with hardcoded subtitles for platforms that don't support SRT
-        try:
-            # Copy the final video
-            hardcoded_output = str(Path(output_path).with_stem(f"{Path(output_path).stem}_with_subs"))
-            
-            # Use ffmpeg to add hardcoded subtitles
-            ffmpeg_cmd = [
-                'ffmpeg', 
-                '-i', output_path, 
-                '-vf', f"subtitles='{srt_path}'", 
-                '-c:a', 'copy', 
-                hardcoded_output
-            ]
-            
-            subprocess.run(ffmpeg_cmd, check=True)
-            print(f"Video with hardcoded subtitles saved to {hardcoded_output}")
-        except Exception as e:
-            print(f"Warning: Could not create hardcoded subtitle version: {e}")
+        # Print info about created files and artifacts in a more prominent way
+        print("\n")
+        print("🎬 " + "=" * 30 + " VIDEO CREATION SUCCESSFUL " + "=" * 30 + " 🎬")
+        print("\n")
+        print("📹 \033[1mFINAL OUTPUT:\033[0m")
+        print(f"   📺 Video: \033[1;32m{os.path.abspath(output_path)}\033[0m")
         
-        print(f"Final video saved to {output_path}")
+        # Print subtitle files if they exist
+        srt_path = Path(audio_file).with_suffix('.srt')
+        vtt_path = Path(audio_file).with_suffix('.vtt')
+        
+        print("\n📝 \033[1mSUBTITLES:\033[0m")
+        if srt_path.exists():
+            print(f"   🔤 SRT: \033[36m{os.path.abspath(srt_path)}\033[0m")
+        else:
+            print(f"   🔤 SRT: Not generated")
+            
+        if vtt_path.exists():
+            print(f"   🔤 VTT: \033[36m{os.path.abspath(vtt_path)}\033[0m")
+        else:
+            print(f"   🔤 VTT: Not generated")
+        
+        # Print segment information
+        print("\n🧩 \033[1mSEGMENT ARTIFACTS:\033[0m")
+        print(f"   📁 Location: \033[36m{os.path.abspath(temp_dir)}\033[0m")
+        for i, segment_path in enumerate(video_segments):
+            if os.path.exists(segment_path):
+                print(f"   🎞️  Segment {i+1}: {os.path.basename(segment_path)}")
+        
+        print("\n" + "=" * 80 + "\n")
+        
         return output_path
-        
-    except KeyboardInterrupt:
-        print("Final video creation cancelled")
-        return None
     except Exception as e:
-        print(f"Error creating final video: {e}")
+        traceback_str = traceback.format_exc()
+        print(f"Error creating final video: {e}\n{traceback_str}")
         return None
 
 if __name__ == "__main__":
     parser = main()
     args = parser.parse_args()
     start_time = time.time()
+    
+    # Start progress monitoring
+    progress_thread = start_progress_monitoring(interval=5)
     
     try:
         debug_point("Starting podcast-to-video conversion")
@@ -1387,12 +1837,30 @@ if __name__ == "__main__":
         
         # Check for required API keys and warn user
         debug_point("Checking API keys")
-        if not os.environ.get("OPENAI_API_KEY"):
-            logger.warning("OPENAI_API_KEY environment variable not set.")
-            logger.warning("This is required for transcription and content enhancement.")
-            if not args.non_interactive and not get_user_confirmation("Continue without OpenAI API key?", default=False):
-                logger.info("Exiting due to missing OpenAI API key")
+        openai_key_available = bool(os.environ.get("OPENAI_API_KEY"))
+        deepseek_key_available = bool(os.environ.get("DEEPSEEK_API_KEY"))
+        
+        if not openai_key_available and not deepseek_key_available:
+            logger.error("No API keys found - both OPENAI_API_KEY and DEEPSEEK_API_KEY are missing.")
+            logger.error("At least one API key is required for transcription and content enhancement.")
+            if not args.non_interactive and not get_user_confirmation("Continue without any API keys?", default=False):
+                logger.info("Exiting due to missing API keys")
                 exit(1)
+        elif not openai_key_available and deepseek_key_available:
+            # Only log DeepSeek preference if it was successfully tested
+            if api_type == "deepseek":
+                logger.info("OPENAI_API_KEY not found, but DEEPSEEK_API_KEY is available.")
+                logger.info("Will use DeepSeek API for transcription and content enhancement.")
+                if not args.non_interactive and not get_user_confirmation("Continue using DeepSeek API?", default=True):
+                    logger.info("Exiting as user chose not to use DeepSeek API")
+                    exit(1)
+            else:
+                logger.warning("DeepSeek API key provided but API test failed.")
+                if not args.non_interactive and not get_user_confirmation("Continue with potentially non-working APIs?", default=False):
+                    logger.info("Exiting due to failed API tests")
+                    exit(1)
+        elif api_type == "openai":
+            logger.info("Using OpenAI API for all operations.")
         
         if not os.environ.get("STABILITY_API_KEY") and not args.allow_dalle_fallback and not args.non_interactive:
             logger.warning("STABILITY_API_KEY environment variable not set.")
@@ -1417,12 +1885,119 @@ if __name__ == "__main__":
             exit(1)
             
         logger.info("Completed initialization and validation")
-        logger.info("Stopping at API key check as requested")
-        print("\n" + "="*50)
-        print("Debug run complete. Stopping before API usage.")
-        print("To continue, export your API keys and run the script again.")
-        print("="*50 + "\n")
-        exit(0)
+        
+        # Proceed with transcription and conversion
+        try:
+            # Transcribe audio with timeout protection
+            debug_point("Starting audio transcription")
+            print("Transcribing audio. This may take several minutes...")
+            transcript, error = with_timeout(
+                transcribe_audio,
+                args=(
+                    args.audio, 
+                    args.force_transcription,
+                    args.transcript_dir,
+                    args.non_interactive,
+                    args.temp_dir
+                ),
+                timeout_seconds=600,  # 10 minute timeout for transcription
+                description="Audio transcription"
+            )
+            
+            if error:
+                logger.error(f"Transcription error or timeout: {error}")
+                exit(1)
+                
+            if transcript is None:
+                logger.error("Transcription failed or was cancelled")
+                exit(1)
+                
+            # Extract meaningful segments
+            debug_point("Extracting segments from transcript")
+            segments = extract_segments(transcript)
+            logger.info(f"Extracted {len(segments)} segments")
+            
+            # Enhance segments with AI (with timeout protection)
+            debug_point("Enhancing segments with AI descriptions")
+            print("Enhancing segments with AI. This may take several minutes...")
+            enhanced_segments, error = with_timeout(
+                enhance_segments,
+                args=(segments,),
+                timeout_seconds=900,  # 15 minute timeout
+                description="Segment enhancement"
+            )
+            
+            if error:
+                logger.error(f"Segment enhancement error or timeout: {error}")
+                exit(1)
+                
+            if enhanced_segments is None:
+                logger.error("Segment enhancement failed or was cancelled")
+                exit(1)
+            
+            # Generate visuals for each segment (with timeout protection)
+            debug_point("Generating visuals for each segment")
+            print("Generating visuals. This may take several minutes...")
+            enhanced_segments_with_visuals, error = with_timeout(
+                generate_visuals,
+                args=(
+                    enhanced_segments, 
+                    args.temp_dir,
+                    args.allow_dalle_fallback,
+                    args.non_interactive
+                ),
+                timeout_seconds=900,  # 15 minute timeout
+                description="Visual generation"
+            )
+            
+            if error:
+                logger.error(f"Visual generation error or timeout: {error}")
+                exit(1)
+                
+            if enhanced_segments_with_visuals is None:
+                logger.error("Visual generation failed or was cancelled")
+                exit(1)
+            
+            # Create final video (with timeout protection)
+            debug_point("Creating final video")
+            print("Creating final video. This may take several minutes...")
+            output_path, error = with_timeout(
+                create_final_video,
+                args=(
+                    enhanced_segments_with_visuals,
+                    args.audio,
+                    args.output,
+                    args.temp_dir
+                ),
+                timeout_seconds=900,  # 15 minute timeout
+                description="Video creation"
+            )
+            
+            if error:
+                logger.error(f"Video creation error or timeout: {error}")
+                exit(1)
+                
+            if output_path is None:
+                logger.error("Video creation failed or was cancelled")
+                exit(1)
+            
+            total_time = time.time() - start_time
+            logger.info(f"Video creation complete: {args.output} in {total_time:.1f} seconds")
+            
+            # Add a more prominent final success message
+            print("\n")
+            print("🎉 " + "=" * 30 + " PROCESS COMPLETED SUCCESSFULLY " + "=" * 30 + " 🎉")
+            print("\n")
+            print(f"⏱️  \033[1mTotal processing time:\033[0m \033[1;32m{total_time/60:.1f} minutes\033[0m")
+            print(f"🔄 \033[1mAll operations completed with no errors\033[0m")
+            print("\n")
+            print("To play your video:")
+            print(f"  \033[1;36mopen \"{os.path.abspath(args.output)}\"\033[0m")
+            print("\n" + "=" * 80 + "\n")
+            
+        except Exception as e:
+            logger.error(f"Error during processing: {e}", exc_info=True)
+            exit(1)
         
     except KeyboardInterrupt:
         # This catch is for any cancellations that happen outside of the functions
