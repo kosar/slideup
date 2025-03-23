@@ -214,6 +214,49 @@ except ImportError:
     logger.error("Stability SDK not installed. Run: pip install stability-sdk")
     STABILITY_AVAILABLE = False
 
+# Add after other global variables
+CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
+def get_cache_key(element_name):
+    """Generate a cache key for an element name"""
+    # Normalize the element name for consistent caching
+    normalized = element_name.lower().strip()
+    return hashlib.md5(normalized.encode()).hexdigest()
+
+def get_cached_research(element_name):
+    """Get cached research results if available"""
+    cache_key = get_cache_key(element_name)
+    cache_file = CACHE_DIR / f"{cache_key}.json"
+    
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+                logger.info(f"Using cached research for element: {element_name}")
+                return cached_data["research"], cached_data["image_prompt"]
+        except Exception as e:
+            logger.warning(f"Error reading cache for {element_name}: {e}")
+    
+    return None, None
+
+def cache_research_results(element_name, research, image_prompt):
+    """Cache research results for future use"""
+    cache_key = get_cache_key(element_name)
+    cache_file = CACHE_DIR / f"{cache_key}.json"
+    
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump({
+                "element_name": element_name,
+                "research": research,
+                "image_prompt": image_prompt,
+                "timestamp": time.time()
+            }, f)
+        logger.info(f"Cached research results for element: {element_name}")
+    except Exception as e:
+        logger.warning(f"Error caching results for {element_name}: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description="Convert podcast to enhanced video")
     parser.add_argument("--audio", required=True, help="Path to the podcast audio file (MP3 or WAV)")
@@ -1231,73 +1274,115 @@ def extract_key_elements(text):
         return []
 
 def research_element(element_name):
-    """Research a specific element"""
+    """Research an element and return corrected text"""
     try:
-        research_response = ai_client.chat.completions.create(
+        # Check cache first
+        cached_result = get_cached_research(element_name)
+        if cached_result:
+            logger.info(f"Using cached research for element: {element_name}")
+            return cached_result["research"]
+        
+        # Log start of research
+        logger.info(f"Starting research for element: {element_name}")
+        
+        # Create a combined prompt for research and spell checking
+        combined_prompt = f"Research: {element_name}"
+        
+        # Make a single API call for both research and spell checking
+        response = ai_client.chat.completions.create(
             model=chat_model,
             messages=[
                 {
-                    "role": "system", 
-                    "content": "Research this element and provide key facts. Be concise."
+                    "role": "system",
+                    "content": "Research and provide key facts. Fix spelling/grammar. Be concise."
                 },
-                {"role": "user", "content": f"Research: {element_name}"}
+                {"role": "user", "content": combined_prompt}
             ],
-            max_tokens=200  # Limit response size
+            max_tokens=100,  # Reduced from 150
+            temperature=0.3  # Added for faster, more focused responses
         )
         
-        return research_response.choices[0].message.content
+        result = response.choices[0].message.content
+        
+        # Cache the result
+        cache_research_results(element_name, result, None)
+        
+        # Log completion
+        logger.info(f"Completed research for element: {element_name}")
+        
+        return result
+        
     except Exception as e:
-        logger.error(f"Error researching element {element_name}: {e}")
-        return f"Information about {element_name}"
+        logger.error(f"Error researching element {element_name}: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return f"Error researching {element_name}: {str(e)}"
 
 def generate_image_prompt(element_name, research):
-    """Generate an image prompt based on the research"""
+    """Generate a prompt for image generation"""
     try:
-        prompt_response = ai_client.chat.completions.create(
+        # Log start of image prompt generation
+        logger.info(f"Starting image prompt generation for element: {element_name}")
+        
+        # Create a concise prompt
+        prompt = f"Element: {element_name}\nResearch: {research}"
+        
+        # Generate image prompt
+        response = ai_client.chat.completions.create(
             model=chat_model,
             messages=[
                 {
-                    "role": "system", 
+                    "role": "system",
                     "content": "Create a clear, concise image generation prompt."
                 },
-                {"role": "user", "content": f"Element: {element_name}\nResearch: {research}"}
+                {"role": "user", "content": prompt}
             ],
-            max_tokens=150  # Limit response size
+            max_tokens=100  # Reduced from 150
         )
         
-        return prompt_response.choices[0].message.content
+        # Log completion
+        logger.info(f"Completed image prompt generation for element: {element_name}")
+        
+        return response.choices[0].message.content
+        
     except Exception as e:
-        logger.error(f"Error generating image prompt for {element_name}: {e}")
-        return f"Visual representation of {element_name}"
+        logger.error(f"Error generating image prompt for {element_name}: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return f"Error generating prompt for {element_name}"
 
 def generate_summary(text, facts, key_elements):
     """Generate a summary of the segment"""
     try:
-        summary_response = ai_client.chat.completions.create(
+        # Log start of summary generation
+        logger.info("Starting summary generation")
+        
+        # Create a concise prompt
+        prompt = f"Text: {text}\nFacts: {facts}\nElements: {[e['name'] for e in key_elements]}"
+        
+        # Generate summary
+        response = ai_client.chat.completions.create(
             model=chat_model,
             messages=[
                 {
-                    "role": "system", 
-                    "content": """You are a video production specialist.
-                               Create a concise summary of this podcast segment that will be
-                               displayed in the video.
-                               
-                               The summary should:
-                               1. Be clear and engaging
-                               2. Highlight key points
-                               3. Be suitable for on-screen display
-                               4. Be limited to 50 words
-                               
-                               Format your response as a single, concise paragraph."""
+                    "role": "system",
+                    "content": "Create a concise summary. Fix spelling/grammar."
                 },
-                {"role": "user", "content": f"Text: {text}\nFacts: {json.dumps(facts)}\nKey Elements: {json.dumps(key_elements)}"}
-            ]
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=150  # Reduced from 200
         )
         
-        return summary_response.choices[0].message.content
+        # Log completion
+        logger.info("Completed summary generation")
+        
+        return response.choices[0].message.content
+        
     except Exception as e:
-        logger.error(f"Error generating summary: {e}")
-        return "Summary of the segment"
+        logger.error(f"Error generating summary: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return f"Error generating summary: {str(e)}"
 
 def spell_check_content(content):
     """Spell check and correct content"""
@@ -1330,6 +1415,47 @@ def spell_check_content(content):
         logger.error(f"Error during spell check: {e}")
         return content
 
+def process_element(element, segment_index, total_segments):
+    """Process a single element (research and image prompt generation)"""
+    try:
+        # Check cache first
+        cached_research, cached_prompt = get_cached_research(element["name"])
+        if cached_research and cached_prompt:
+            logger.info(f"Using cached results for element {element['name']}")
+            return {
+                "name": element["name"],
+                "research": cached_research,
+                "image_prompt": cached_prompt
+            }
+        
+        # Research and spell check combined
+        logger.info(f"Starting research for element {element['name']} in segment {segment_index}/{total_segments}")
+        research = research_element(element["name"])
+        logger.info(f"Completed research for element {element['name']}")
+        
+        # Generate image prompt
+        logger.info(f"Starting image prompt generation for element {element['name']}")
+        image_prompt = generate_image_prompt(element["name"], research)
+        logger.info(f"Completed image prompt generation for element {element['name']}")
+        
+        # Cache the results
+        cache_research_results(element["name"], research, image_prompt)
+        
+        return {
+            "name": element["name"],
+            "research": research,
+            "image_prompt": image_prompt
+        }
+    except Exception as e:
+        logger.error(f"Error processing element {element['name']}: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return {
+            "name": element["name"],
+            "research": f"Error researching {element['name']}: {str(e)}",
+            "image_prompt": f"Error generating prompt for {element['name']}"
+        }
+
 def enhance_segments(segments, non_interactive=False):
     """Enhance segments with AI-generated descriptions and historical context"""
     global current_operation
@@ -1342,6 +1468,10 @@ def enhance_segments(segments, non_interactive=False):
     segment_times = []
     start_time = time.time()
     
+    # Create a thread pool for parallel processing
+    max_workers = 3  # Process up to 3 elements concurrently
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    
     for i, segment in enumerate(segments):
         segment_start = time.time()
         current_operation = f"enhancing segment {i+1}/{len(segments)}"
@@ -1353,57 +1483,25 @@ def enhance_segments(segments, non_interactive=False):
             facts = extract_facts(segment["text"])
             key_elements = extract_key_elements(segment["text"])
             
-            # Research each key element
-            for j, element in enumerate(key_elements):
-                current_operation = f"researching element {j+1}/{len(key_elements)} in segment {i+1}/{len(segments)}"
-                check_cancel()
-                
-                # Acknowledge progress before API call
-                logger.info(f"Starting research for element {j+1}/{len(key_elements)} in segment {i+1}/{len(segments)}")
-                
-                # Research the element
-                research = research_element(element["name"])
-                
-                # Acknowledge progress after API call
-                logger.info(f"Completed research for element {j+1}/{len(key_elements)} in segment {i+1}/{len(segments)}")
-                
-                # Spell check the research
-                current_operation = f"spell checking element {j+1}"
-                check_cancel()
-                
-                # Acknowledge progress before spell check
-                logger.info(f"Starting spell check for element {j+1}")
-                
-                spell_check_response = ai_client.chat.completions.create(
-                    model=chat_model,
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": "Fix spelling and grammar. Return corrected text only."
-                        },
-                        {"role": "user", "content": research}
-                    ],
-                    max_tokens=200  # Limit response size
+            # Process elements in parallel
+            futures = []
+            for element in key_elements:
+                future = executor.submit(
+                    process_element,
+                    element,
+                    i + 1,
+                    len(segments)
                 )
-                
-                # Acknowledge progress after spell check
-                logger.info(f"Completed spell check for element {j+1}")
-                
-                element["research"] = spell_check_response.choices[0].message.content
-                
-                # Generate image prompt
-                current_operation = f"generating image prompt for element {j+1}"
-                check_cancel()
-                
-                # Acknowledge progress before image prompt generation
-                logger.info(f"Starting image prompt generation for element {j+1}")
-                
-                image_prompt = generate_image_prompt(element["name"], element["research"])
-                
-                # Acknowledge progress after image prompt generation
-                logger.info(f"Completed image prompt generation for element {j+1}")
-                
-                element["image_prompt"] = image_prompt
+                futures.append(future)
+            
+            # Wait for all elements to be processed
+            for j, future in enumerate(futures):
+                try:
+                    result = future.result()
+                    key_elements[j].update(result)
+                except Exception as e:
+                    logger.error(f"Error processing element {j+1}: {str(e)}")
+                    continue
             
             # Generate summary
             current_operation = f"generating summary for segment {i+1}"
@@ -1417,31 +1515,10 @@ def enhance_segments(segments, non_interactive=False):
             # Acknowledge progress after summary generation
             logger.info(f"Completed summary generation for segment {i+1}")
             
-            # Spell check the summary
-            current_operation = f"spell checking summary for segment {i+1}"
-            check_cancel()
-            
-            # Acknowledge progress before summary spell check
-            logger.info(f"Starting summary spell check for segment {i+1}")
-            
-            spell_check_response = ai_client.chat.completions.create(
-                model=chat_model,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are a professional proofreader. Fix any spelling or grammar errors in this text that will be used as an image generation prompt. Maintain the same meaning but ensure perfect spelling."
-                    },
-                    {"role": "user", "content": summary}
-                ]
-            )
-            
-            # Acknowledge progress after summary spell check
-            logger.info(f"Completed summary spell check for segment {i+1}")
-            
             # Update segment with enhanced information
             segment["facts"] = facts
             segment["key_elements"] = key_elements
-            segment["summary"] = spell_check_response.choices[0].message.content
+            segment["summary"] = summary
             
             # Calculate and display timing statistics
             segment_duration = time.time() - segment_start
@@ -1465,11 +1542,14 @@ def enhance_segments(segments, non_interactive=False):
             
         except KeyboardInterrupt:
             print(f"\nEnhancement cancelled during segment {i+1}")
+            executor.shutdown(wait=False)
             return segments
         except Exception as e:
             print(f"Error enhancing segment {i+1}: {e}")
             continue
     
+    # Clean up the thread pool
+    executor.shutdown(wait=True)
     return segments
 
 def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, non_interactive=False):
@@ -1599,9 +1679,12 @@ def generate_image_stability(prompt, output_path, width=768, height=512, allow_d
     current_operation = "generating image"
     
     try:
-        # Acknowledge progress before image generation
-        logger.info(f"Starting Stability API image generation: {os.path.basename(output_path)}")
-        print(f"Generating image using Stability API...")
+        # Log detailed request information
+        logger.info("Stability AI Image Generation Request:")
+        logger.info(f"- Prompt: {prompt}")
+        logger.info(f"- Output path: {output_path}")
+        logger.info(f"- Dimensions: {width}x{height}")
+        logger.info(f"- Engine ID: {stability_engine_id}")
         
         # Create the image generation request
         request = stability_pb2.GenerationRequest(
@@ -1613,21 +1696,41 @@ def generate_image_stability(prompt, output_path, width=768, height=512, allow_d
             sampler=stability_pb2.SAMPLER_K_DPMPP_2M
         )
         
+        # Log request details
+        logger.info("Sending request to Stability API...")
+        
         # Send the request to Stability API
         response = stability_client.Generate(request)
         
+        # Log response details
+        logger.info("Received response from Stability API")
+        logger.info(f"- Response type: {type(response)}")
+        logger.info(f"- Number of artifacts: {len(response.artifacts) if hasattr(response, 'artifacts') else 'No artifacts'}")
+        
         # Process the response
         if response.artifacts:
+            # Log artifact details
+            for i, artifact in enumerate(response.artifacts):
+                logger.info(f"Artifact {i+1}:")
+                logger.info(f"- Type: {artifact.type}")
+                logger.info(f"- Size: {len(artifact.binary) if hasattr(artifact, 'binary') else 'No binary data'}")
+            
             # Save the generated image
             with open(output_path, "wb") as f:
                 f.write(response.artifacts[0].binary)
             
-            # Acknowledge successful image generation
-            logger.info(f"Successfully generated image: {os.path.basename(output_path)}")
-            print(f"✓ Image generated successfully: {os.path.basename(output_path)}")
-            return True
+            # Verify file was created
+            if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                logger.info(f"Successfully saved image to {output_path} (size: {file_size} bytes)")
+                print(f"✓ Image generated successfully: {os.path.basename(output_path)}")
+                return True
+            else:
+                logger.error(f"Failed to save image to {output_path}")
+                print(f"✗ Failed to save generated image")
+                return False
         else:
-            logger.warning(f"No image generated by Stability API")
+            logger.warning("No artifacts in Stability API response")
             print(f"✗ Stability API failed to generate image")
             
             if allow_dalle_fallback:
@@ -1638,7 +1741,9 @@ def generate_image_stability(prompt, output_path, width=768, height=512, allow_d
                 return False
                 
     except Exception as e:
-        logger.error(f"Error generating image with Stability API: {e}")
+        logger.error(f"Error generating image with Stability API: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         print(f"✗ Error generating image: {e}")
         
         if allow_dalle_fallback:
@@ -1649,344 +1754,91 @@ def generate_image_stability(prompt, output_path, width=768, height=512, allow_d
             return False
 
 def create_video_segment(segment, output_path, audio_file_path, style="modern"):
-    """Create a video segment from an enhanced segment with subtitles"""
-    global current_operation, temp_files
-    current_operation = f"creating video segment from {segment['start']:.1f} to {segment['end']:.1f}"
-    
-    # Register output as a temporary file
-    temp_files.append(output_path)
-    
-    # Extract audio for this segment
-    audio_start = segment["start"]
-    audio_end = segment["end"]
-    segment_duration = audio_end - audio_start
-    
-    # Create clips for each element
-    clips = []
-    
-    # Add main background image
-    main_bg = ImageClip(segment["main_image"]).with_duration(segment_duration)
-    main_bg = main_bg.resized(width=1920)  # Resize for 1080p video
-    clips.append(main_bg)
-    
-    # Add caption text
-    if "caption" in segment and segment["caption"]:
-        caption_txt = TextClip(
-            text=segment["caption"], 
-            font_size=36, 
-            color='white',
-            bg_color='black',
-            font='Arial',
-            size=(1800, None),
-            method='caption'
-        ).with_position(('center', 100)).with_duration(segment_duration)
-        clips.append(caption_txt)
-    
-    # Add key elements with images and descriptions
-    if "key_elements" in segment and segment["element_images"]:
-        num_elements = len(segment["key_elements"])
-        for i, (element, img_path) in enumerate(zip(segment["key_elements"], segment["element_images"])):
-            # Calculate timing for this element
-            element_start = segment_duration * i / max(num_elements, 1)
-            element_duration = segment_duration / max(num_elements, 1)
-            
-            # Create element image
-            try:
-                elem_img = ImageClip(img_path).with_duration(element_duration).with_start(element_start)
-                elem_img = elem_img.resized(width=640)  # Smaller size for element images
-                
-                # Position in the right side
-                elem_img = elem_img.with_position(('right', 180))
-                clips.append(elem_img)
-                
-                # Add element name (title)
-                name_txt = TextClip(
-                    text=f"{element['name']}", 
-                    font_size=28, 
-                    color='white',
-                    bg_color='black',
-                    font='Arial',
-                    size=(620, None),
-                    method='caption'
-                ).with_position(('right', 180 + elem_img.size[1] + 10)).with_start(element_start).with_duration(element_duration)
-                clips.append(name_txt)
-                
-                # Add element description below the name
-                desc_txt = TextClip(
-                    text=f"{element.get('description', element.get('visual_caption', ''))}",
-                    font_size=22, 
-                    color='white',
-                    bg_color='black',
-                    font='Arial',
-                    size=(620, None),
-                    method='caption'
-                ).with_position(('right', 180 + elem_img.size[1] + 50)).with_start(element_start).with_duration(element_duration)
-                clips.append(desc_txt)
-            except Exception as e:
-                print(f"Error adding element image: {e}")
-    
-    # Add subtitles if requested
-    subtitle_display = segment.get("subtitle_display", "always")
-    
-    if subtitle_display != "none":
-        # Get the SRT file path
-        srt_path = Path(audio_file_path).with_suffix('.srt')
-        
-        if srt_path.exists():
-            try:
-                # Parse SRT to get relevant subtitle segments
-                subtitles = parse_srt(srt_path)
-                relevant_subs = filter_subtitles(subtitles, audio_start, audio_end)
-                
-                # Add each subtitle as a text clip
-                for sub in relevant_subs:
-                    # Adjust timestamps relative to segment
-                    rel_start = max(0, sub["start"] - audio_start)
-                    rel_end = min(segment_duration, sub["end"] - audio_start)
-                    
-                    # Skip if outside segment bounds
-                    if rel_start >= segment_duration or rel_end <= 0:
-                        continue
-                    
-                    # Create subtitle text clip
-                    sub_txt = TextClip(
-                        text=sub["text"], 
-                        font_size=24, 
-                        color='white',
-                        bg_color='black',
-                        font='Arial',
-                        size=(1800, None),
-                        method='caption'
-                    ).with_start(rel_start).with_duration(rel_end - rel_start)
-                    
-                    # Position at bottom of screen
-                    sub_txt = sub_txt.with_position(('center', 'bottom'))
-                    clips.append(sub_txt)
-            except Exception as e:
-                print(f"Error adding subtitles: {e}")
-    
-    # Composite all clips
-    video = CompositeVideoClip(clips, size=(1920, 1080))
-    
-    # Write to file
-    print(f"Rendering video segment...")
-    check_cancel()
-    video.write_videofile(output_path, fps=24, codec='libx264', audio=None)
-    
-    return output_path
-
-def parse_srt(srt_path):
-    """Parse SRT subtitle file"""
-    subtitles = []
-    current_sub = None
-    
-    with open(srt_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # Skip empty lines
-        if not line:
-            i += 1
-            continue
-        
-        # Try to parse as a subtitle number
-        try:
-            int(line)
-            # This is a new subtitle entry
-            if current_sub:
-                subtitles.append(current_sub)
-            current_sub = {"index": int(line), "text": ""}
-            i += 1
-            continue
-        except ValueError:
-            pass
-        
-        # Try to parse as a timestamp
-        if ' --> ' in line:
-            timestamps = line.split(' --> ')
-            if len(timestamps) == 2:
-                current_sub["start"] = parse_timestamp(timestamps[0])
-                current_sub["end"] = parse_timestamp(timestamps[1])
-                i += 1
-                continue
-        
-        # Must be subtitle text
-        if current_sub:
-            if current_sub["text"]:
-                current_sub["text"] += " " + line
-            else:
-                current_sub["text"] = line
-        
-        i += 1
-    
-    # Add the last subtitle
-    if current_sub:
-        subtitles.append(current_sub)
-    
-    return subtitles
-
-def parse_timestamp(timestamp):
-    """Convert SRT timestamp to seconds"""
-    # Format: 00:00:00,000
-    timestamp = timestamp.replace(',', '.')
-    h, m, s = timestamp.split(':')
-    return int(h) * 3600 + int(m) * 60 + float(s)
-
-def filter_subtitles(subtitles, start_time, end_time):
-    """Filter subtitles to only include those within the given time range"""
-    return [sub for sub in subtitles if sub["end"] >= start_time and sub["start"] <= end_time]
-
-def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
-    """Create the final video by concatenating all segments with subtitles"""
-    global current_operation, temp_files
-    current_operation = "creating final video"
-    
-    print("Creating final video...")
-    
-    # Track timing statistics
-    segment_times = []
-    start_time = time.time()
-    
-    # Register output as potential temporary file
-    temp_files.append(output_path)
-    
-    # Ensure subtitle files exist
-    srt_path = Path(audio_file).with_suffix('.srt')
-    if not srt_path.exists():
-        print("Warning: No subtitle file found. Generating one...")
-        # If we don't have subtitles, transcribe the audio again to get them
-        transcribe_audio(audio_file)
-    
-    # Create video segments
-    video_segments = []
-    for i, segment in enumerate(enhanced_segments):
-        segment_start = time.time()
-        current_operation = f"creating video segment {i+1}/{len(enhanced_segments)}"
-        check_cancel()
-        
-        segment_output = os.path.join(temp_dir, f"segment_{i}.mp4")
-        segment_result = create_video_segment(segment, segment_output, audio_file)
-        
-        if segment_result:
-            video_segments.append(segment_output)
-        elif is_cancelling:
-            print("Final video creation cancelled")
-            return None
-            
-        # Calculate and display timing statistics
-        segment_duration = time.time() - segment_start
-        segment_times.append(segment_duration)
-        
-        # Calculate average time and remaining time
-        avg_time = sum(segment_times) / len(segment_times)
-        remaining_segments = len(enhanced_segments) - (i + 1)
-        estimated_remaining_time = avg_time * remaining_segments
-        
-        # Calculate progress percentage
-        progress = (i + 1) / len(enhanced_segments) * 100
-        
-        # Display progress and timing information
-        print(f"\nVideo Creation Progress: {progress:.1f}% ({i+1}/{len(enhanced_segments)} segments)")
-        print(f"Current segment duration: {segment_duration:.1f}s")
-        print(f"Average segment duration: {avg_time:.1f}s")
-        print(f"Estimated remaining time: {estimated_remaining_time/60:.1f} minutes")
-        print(f"Total elapsed time: {(time.time() - start_time)/60:.1f} minutes")
-        print("-" * 50)
-    
-    # Check if we have any segments to work with
-    if not video_segments:
-        print("No video segments were successfully created. Cannot produce final video.")
-        return None
-    
+    """Create a video segment with visuals and audio"""
     try:
-        current_operation = "concatenating video segments"
-        check_cancel()
+        # Log start of video segment creation
+        logger.info(f"Creating video segment: {output_path}")
         
-        # Load audio file
-        audio = AudioFileClip(audio_file)
+        # Create video clip with visuals
+        video_clip = ImageClip(segment["visuals"]["main_image"])
+        video_duration = segment["end"] - segment["start"]
+        video_clip = video_clip.set_duration(video_duration)
         
-        # Create video clips from segments
-        clips = []
-        for i, segment in enumerate(enhanced_segments):
-            video_file = video_segments[i]
-            
-            # Load video clip
-            video_clip = VideoFileClip(video_file, audio=False)
-            
-            # Set position in the timeline
-            video_clip = video_clip.with_start(segment["start"])
-            
-            # Add transitions if specified
-            transition_style = segment.get("transition_style", "cut")
-            if i > 0 and transition_style != "cut":
-                # Apply different transitions based on style
-                prev_clip = clips[-1]
-                if transition_style == "fade":
-                    # Add fade transition
-                    prev_clip = prev_clip.crossfadeout(0.5)
-                    video_clip = video_clip.crossfadein(0.5)
-                elif transition_style == "slide":
-                    # Slide transition would be more complex, simplified version
-                    pass
-                elif transition_style == "zoom":
-                    # Zoom transition would be more complex, simplified version
-                    pass
-            
-            clips.append(video_clip)
+        # Extract audio segment
+        audio_clip = AudioFileClip(audio_file_path).subclip(segment["start"], segment["end"])
         
-        # Concatenate all clips
-        final_video = concatenate_videoclips(clips, method="compose")
+        # Combine video and audio
+        final_clip = video_clip.set_audio(audio_clip)
         
-        # Add original audio
-        final_video = final_video.with_audio(audio)
+        # Write video segment with optimized settings
+        final_clip.write_videofile(
+            output_path,
+            fps=24,
+            codec='libx264',
+            audio_codec='aac',
+            preset='ultrafast',  # Faster encoding
+            threads=4,  # Use multiple threads
+            bitrate='2000k'  # Reduced bitrate for faster processing
+        )
         
-        # Add any final overlays or effects
+        # Clean up
+        video_clip.close()
+        audio_clip.close()
+        final_clip.close()
         
-        # Write final video
-        current_operation = "rendering final video"
-        print("Writing final video file...")
-        check_cancel()
-        
-        final_video.write_videofile(output_path, fps=24, codec='libx264')
-        
-        # Print info about created files and artifacts in a more prominent way
-        print("\n")
-        print("🎬 " + "=" * 30 + " VIDEO CREATION SUCCESSFUL " + "=" * 30 + " 🎬")
-        print("\n")
-        print("📹 \033[1mFINAL OUTPUT:\033[0m")
-        print(f"   📺 Video: \033[1;32m{os.path.abspath(output_path)}\033[0m")
-        
-        # Print subtitle files if they exist
-        srt_path = Path(audio_file).with_suffix('.srt')
-        vtt_path = Path(audio_file).with_suffix('.vtt')
-        
-        print("\n📝 \033[1mSUBTITLES:\033[0m")
-        if srt_path.exists():
-            print(f"   🔤 SRT: \033[36m{os.path.abspath(srt_path)}\033[0m")
-        else:
-            print(f"   🔤 SRT: Not generated")
-            
-        if vtt_path.exists():
-            print(f"   🔤 VTT: \033[36m{os.path.abspath(vtt_path)}\033[0m")
-        else:
-            print(f"   🔤 VTT: Not generated")
-        
-        # Print segment information
-        print("\n🧩 \033[1mSEGMENT ARTIFACTS:\033[0m")
-        print(f"   📁 Location: \033[36m{os.path.abspath(temp_dir)}\033[0m")
-        for i, segment_path in enumerate(video_segments):
-            if os.path.exists(segment_path):
-                print(f"   🎞️  Segment {i+1}: {os.path.basename(segment_path)}")
-        
-        print("\n" + "=" * 80 + "\n")
+        # Log completion
+        logger.info(f"Completed video segment creation: {output_path}")
         
         return output_path
+        
     except Exception as e:
-        traceback_str = traceback.format_exc()
-        print(f"Error creating final video: {e}\n{traceback_str}")
+        logger.error(f"Error creating video segment: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
+    """Create the final video with all segments"""
+    try:
+        # Log start of final video creation
+        logger.info("Starting final video creation")
+        
+        # Create video clips from segments
+        video_clips = []
+        for i, segment in enumerate(enhanced_segments):
+            segment_path = os.path.join(temp_dir, f"segment_{i}.mp4")
+            if os.path.exists(segment_path):
+                clip = VideoFileClip(segment_path)
+                video_clips.append(clip)
+        
+        # Concatenate all clips
+        final_clip = concatenate_videoclips(video_clips)
+        
+        # Write final video with optimized settings
+        final_clip.write_videofile(
+            output_path,
+            fps=24,
+            codec='libx264',
+            audio_codec='aac',
+            preset='ultrafast',  # Faster encoding
+            threads=4,  # Use multiple threads
+            bitrate='2000k'  # Reduced bitrate for faster processing
+        )
+        
+        # Clean up
+        for clip in video_clips:
+            clip.close()
+        final_clip.close()
+        
+        # Log completion
+        logger.info(f"Completed final video creation: {output_path}")
+        
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"Error creating final video: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 if __name__ == "__main__":
