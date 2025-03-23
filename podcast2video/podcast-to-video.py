@@ -17,6 +17,7 @@ from pathlib import Path
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+import queue
 
 # Set up logging
 logging.basicConfig(
@@ -36,38 +37,93 @@ temp_files = []
 start_time = time.time()
 last_progress_time = time.time()  # For tracking progress updates
 progress_thread = None
+task_start_time = None  # Track when current task started
+task_name = None  # Track current task name
+task_stack = []  # Stack to track nested operations
+min_task_duration = 0.5  # Increased minimum duration to log (in seconds)
+
+# List of known long-running operations that shouldn't trigger warnings
+LONG_RUNNING_OPERATIONS = [
+    'rendering',
+    'encoding',
+    'processing',
+    'building video',
+    'writing video',
+    'concatenating',
+    'transcribing',
+    'enhancing',
+    'generating',
+    'creating video',
+    'finalizing'
+]
 
 # Debug function
 def debug_point(message, level=logging.DEBUG):
     """Log debug information with consistent formatting"""
+    global current_operation, last_progress_time, task_start_time, task_name, task_stack
+    
+    # If this is a new task, update task tracking
+    if message != current_operation:
+        # If we have a previous task, log its completion
+        if task_name is not None:
+            task_duration = time.time() - task_start_time if task_start_time else 0
+            # Only log if duration is significant
+            if task_duration >= min_task_duration:
+                logger.info(f"Task completed: {task_name} (duration: {task_duration:.1f}s)")
+        
+        # Start tracking new task
+        task_name = message
+        task_start_time = time.time()
+        last_progress_time = time.time()
+        
+        # Add to task stack for nested operations
+        task_stack.append((message, task_start_time))
+    
     logger.log(level, f"DEBUG: {message}")
-    # Also track current operation
-    global current_operation, last_progress_time
     current_operation = message
     last_progress_time = time.time()
 
+def complete_task(task_to_complete):
+    """Mark a task as complete and remove it from the stack"""
+    global task_stack, task_name, task_start_time
+    if task_stack and task_stack[-1][0] == task_to_complete:
+        task_stack.pop()
+        if task_stack:
+            # Restore previous task context
+            task_name, task_start_time = task_stack[-1]
+        else:
+            # No more tasks in stack
+            task_name = None
+            task_start_time = None
+
 # Progress monitoring thread
-def start_progress_monitoring(interval=10):
-    """Start a thread to periodically report progress"""
-    def monitor_progress():
-        global last_progress_time
-        last_report = ""
+def start_progress_monitoring(interval=5):
+    """Start progress monitoring in a separate thread"""
+    def monitor():
+        global current_operation, last_progress_time, task_start_time, task_name, task_stack
         
-        while not is_cancelling:
+        while True:
             time.sleep(interval)
-            elapsed = time.time() - start_time
-            if last_report != current_operation:
-                print(f"Status after {elapsed:.1f}s: {current_operation}")
-                last_report = current_operation
+            current_time = time.time()
+            
+            # Check if we have an active task
+            if current_operation and task_start_time:
+                elapsed = current_time - task_start_time
                 
-            # Check for potential hanging
-            time_since_update = time.time() - last_progress_time
-            if time_since_update > interval * 2:
-                print(f"WARNING: No progress updates for {time_since_update:.1f}s while: {current_operation}")
-                
-    thread = threading.Thread(target=monitor_progress, daemon=True)
-    thread.start()
-    return thread
+                # Only show warnings for tasks that are actually running
+                if elapsed > interval * 2:
+                    # Check if this is a long-running operation
+                    is_long_running = any(op in current_operation.lower() for op in LONG_RUNNING_OPERATIONS)
+                    
+                    if not is_long_running:
+                        logger.warning(f"No progress updates for {elapsed:.1f}s while: {current_operation} (Task started {elapsed:.1f}s ago)")
+            
+            # Update last progress time
+            last_progress_time = current_time
+    
+    monitor_thread = threading.Thread(target=monitor, daemon=True)
+    monitor_thread.start()
+    return monitor_thread
 
 # Function with timeout
 def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="operation"):
@@ -97,6 +153,10 @@ def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="oper
     if exception[0]:
         return None, exception[0]
         
+    if is_finished[0]:
+        logger.info(f"{description} completed successfully")
+    else:
+        logger.warning(f"{description} did not complete within {timeout_seconds} seconds")
     return result[0], None
 
 # Import required modules
@@ -1094,6 +1154,77 @@ def extract_segments(transcript, min_segment_duration=10, max_segment_duration=3
     
     print(f"Extracted {len(segments)} meaningful segments")
     return segments
+
+def extract_facts(segment_text):
+    """Extract key facts from a segment of text"""
+    try:
+        # Split text into smaller chunks if too long
+        max_chunk_length = 500  # Reduced from 1000
+        chunks = [segment_text[i:i+max_chunk_length] for i in range(0, len(segment_text), max_chunk_length)]
+        
+        all_facts = []
+        for chunk in chunks:
+            # Add timeout to API call
+            response = with_timeout(
+                lambda: ai_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "Extract 2-3 key facts from the text. Focus on historical events, dates, names, and significant concepts. Return as JSON array of strings."},
+                        {"role": "user", "content": chunk}
+                    ],
+                    response_format={"type": "json_object"},
+                    max_tokens=500  # Limit response size
+                ),
+                timeout=30  # 30 second timeout
+            )
+            
+            try:
+                facts = json.loads(response.choices[0].message.content)
+                if isinstance(facts, list):
+                    all_facts.extend(facts)
+                elif isinstance(facts, dict) and "facts" in facts:
+                    all_facts.extend(facts["facts"])
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse facts JSON: {response.choices[0].message.content}")
+                continue
+        
+        # Limit total facts per segment
+        return all_facts[:5]
+        
+    except Exception as e:
+        logger.error(f"Error extracting facts: {e}")
+        return []
+
+def spell_check_content(content):
+    """Spell check and correct content"""
+    try:
+        # Split content into smaller chunks if too long
+        max_chunk_length = 300  # Reduced from 500
+        chunks = [content[i:i+max_chunk_length] for i in range(0, len(content), max_chunk_length)]
+        
+        corrected_chunks = []
+        for chunk in chunks:
+            # Add timeout to API call
+            response = with_timeout(
+                lambda: ai_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "Check spelling and grammar. Return corrected text only, no explanations."},
+                        {"role": "user", "content": chunk}
+                    ],
+                    response_format={"type": "text"},
+                    max_tokens=300  # Limit response size
+                ),
+                timeout=30  # 30 second timeout
+            )
+            
+            corrected_chunks.append(response.choices[0].message.content)
+        
+        return " ".join(corrected_chunks)
+        
+    except Exception as e:
+        logger.error(f"Error spell checking: {e}")
+        return content
 
 def enhance_segments(segments):
     """Use AI API to enhance each segment with accurate factual content and research"""
