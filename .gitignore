@@ -181,3 +181,5 @@ podcast2video/transcripts/
 podcast2video/temp/
 podcast2video/test_resources/
 podcast2video/test_output.mp4
+podcast2video/*.srt
+podcast2video/*.vtt

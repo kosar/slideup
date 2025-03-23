@@ -224,7 +224,7 @@ def test_api_connection(client, api_type="openai"):
             return True
         elif api_type.lower() == "deepseek":
             # Try multiple potential DeepSeek model names in case of API changes
-            potential_models = ["deepseek-llm", "deepseek-chat", "deepseek-coder"]
+            potential_models = ["deepseek-chat", "deepseek-coder"]  # Removed "deepseek-llm" as it doesn't exist
             
             for model in potential_models:
                 try:
@@ -283,7 +283,7 @@ try:
                 api_key=deepseek_api_key,
                 base_url="https://api.deepseek.com/v1"
             )
-            chat_model = "deepseek-llm"
+            chat_model = "deepseek-chat"  # Changed from "deepseek-llm" to "deepseek-chat" which works
             embedding_model = "deepseek-embedding"
             api_type = "deepseek"
             logger.info("Using DeepSeek API for language models")
@@ -730,7 +730,7 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
                                 return None
                                 
                         # Try different potential audio models
-                        audio_models = ["deepseek-audio", "deepseek-whisper", "whisper-1"]
+                        audio_models = ["whisper-1"]  # Simplified to only use models that are likely to work
                         transcription_success = False
                         
                         for audio_model in audio_models:
@@ -750,7 +750,19 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
                         
                         if not transcription_success:
                             logger.error("All DeepSeek audio models failed")
-                            raise Exception("DeepSeek transcription failed with all models")
+                            # Instead of raising an exception, fall back to OpenAI directly
+                            if openai_api_key:
+                                logger.info("Falling back to OpenAI for transcription")
+                                temp_client = OpenAI(api_key=openai_api_key)
+                                chunk_transcript = temp_client.audio.transcriptions.create(
+                                    model="whisper-1",
+                                    file=audio_file,
+                                    response_format="verbose_json"
+                                )
+                                transcription_success = True
+                            else:
+                                logger.error("All DeepSeek audio models failed and no OpenAI fallback available")
+                                raise Exception("DeepSeek transcription failed with all models")
                     except Exception as e:
                         logger.error(f"DeepSeek transcription failed: {e}")
                         if openai_api_key:
