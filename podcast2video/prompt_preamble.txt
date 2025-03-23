@@ -1,0 +1,8 @@
+always preface running podcast-to-video.py or any shell script that calls it with 2 important 'source' steps: 1. source the api keys from the parent folder (the slideup folder) under the file name .keys_donotcheckin.env; 2. source the python virtual env venv named podcast_env that sits in the podcast2video folder. If you are making changes based on problems you are trying to solve: BE SURE to use the limit_to_one_minute flag which will use a minimal set of samples to fully exercise the entire codebase. Once you solve the problem, run the program one last time without the limit_to_one_minute flag, to be sure that it processes the entire input file. 
+
+Examine the terminal output and check for warnings or errors. 
+
+If you are running the shell script, be sure to run it with the command: ./run_podcast2video.sh
+
+If you are running the python script directly, be sure to run it with the command: python podcast-to-video.py
+
