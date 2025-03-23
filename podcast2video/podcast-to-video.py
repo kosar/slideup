@@ -21,7 +21,7 @@ import queue
 
 # Set up logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # Changed from DEBUG to INFO
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -29,6 +29,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('podcast2video')
+
+# Create a separate logger for HTTP requests with reduced verbosity
+http_logger = logging.getLogger('http')
+http_logger.setLevel(logging.WARNING)  # Only show warnings for HTTP issues
 
 # Global variables to track state
 current_operation = "initializing"
@@ -58,7 +62,7 @@ LONG_RUNNING_OPERATIONS = [
 ]
 
 # Debug function
-def debug_point(message, level=logging.DEBUG):
+def debug_point(message, level=logging.INFO):  # Changed default level to INFO
     """Log debug information with consistent formatting"""
     global current_operation, last_progress_time, task_start_time, task_name, task_stack
     
@@ -79,7 +83,9 @@ def debug_point(message, level=logging.DEBUG):
         # Add to task stack for nested operations
         task_stack.append((message, task_start_time))
     
-    logger.log(level, f"DEBUG: {message}")
+    # Only log if it's a status update or important message
+    if level == logging.INFO or "Status" in message or "Task completed" in message:
+        logger.log(level, f"Status: {message}")
     current_operation = message
     last_progress_time = time.time()
 
@@ -116,7 +122,7 @@ def start_progress_monitoring(interval=5):
                     is_long_running = any(op in current_operation.lower() for op in LONG_RUNNING_OPERATIONS)
                     
                     if not is_long_running:
-                        logger.warning(f"No progress updates for {elapsed:.1f}s while: {current_operation} (Task started {elapsed:.1f}s ago)")
+                        logger.warning(f"No progress updates for {elapsed:.1f}s while: {current_operation}")
             
             # Update last progress time
             last_progress_time = current_time
@@ -145,9 +151,8 @@ def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="oper
     thread.join(timeout_seconds)
     
     if thread.is_alive():
-        print(f"\nWARNING: {description} is taking longer than {timeout_seconds} seconds")
-        print(f"Still running: {current_operation}")
-        print(f"This might indicate the operation is stuck or just taking a long time.")
+        logger.warning(f"{description} is taking longer than {timeout_seconds} seconds")
+        logger.warning(f"Still running: {current_operation}")
         return None, TimeoutError(f"{description} exceeded {timeout_seconds}s timeout")
     
     if exception[0]:
