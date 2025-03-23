@@ -1277,10 +1277,10 @@ def research_element(element_name):
     """Research an element and return corrected text"""
     try:
         # Check cache first
-        cached_result = get_cached_research(element_name)
-        if cached_result:
+        cached_research, cached_image_prompt = get_cached_research(element_name)
+        if cached_research:
             logger.info(f"Using cached research for element: {element_name}")
-            return cached_result["research"]
+            return cached_research
         
         # Log start of research
         logger.info(f"Starting research for element: {element_name}")
@@ -1305,7 +1305,7 @@ def research_element(element_name):
         result = response.choices[0].message.content
         
         # Cache the result
-        cache_research_results(element_name, result, None)
+        cache_research_results(element_name, result, cached_image_prompt)
         
         # Log completion
         logger.info(f"Completed research for element: {element_name}")
