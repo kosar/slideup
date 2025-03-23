@@ -73,7 +73,12 @@ def debug_point(message, level=logging.INFO):  # Changed default level to INFO
             task_duration = time.time() - task_start_time if task_start_time else 0
             # Only log if duration is significant
             if task_duration >= min_task_duration:
-                logger.info(f"Task completed: {task_name} (duration: {task_duration:.1f}s)")
+                # Check if this was a long-running operation
+                is_long_running = any(op in task_name.lower() for op in LONG_RUNNING_OPERATIONS)
+                if is_long_running:
+                    logger.info(f"Long-running task completed: {task_name} (duration: {task_duration:.1f}s)")
+                else:
+                    logger.info(f"Task completed: {task_name} (duration: {task_duration:.1f}s)")
         
         # Start tracking new task
         task_name = message
@@ -82,6 +87,9 @@ def debug_point(message, level=logging.INFO):  # Changed default level to INFO
         
         # Add to task stack for nested operations
         task_stack.append((message, task_start_time))
+        
+        # Log start of new task
+        logger.info(f"Starting task: {message}")
     
     # Only log if it's a status update or important message
     if level == logging.INFO or "Status" in message or "Task completed" in message:
@@ -114,7 +122,7 @@ def start_progress_monitoring(interval=5):
             
             # Check if we have an active task
             if current_operation and task_start_time:
-                elapsed = current_time - task_start_time
+                elapsed = current_time - last_progress_time  # Changed from task_start_time to last_progress_time
                 
                 # Only show warnings for tasks that are actually running
                 if elapsed > interval * 2:
@@ -123,6 +131,7 @@ def start_progress_monitoring(interval=5):
                     
                     if not is_long_running:
                         logger.warning(f"No progress updates for {elapsed:.1f}s while: {current_operation}")
+                        last_progress_time = current_time  # Reset the timer after warning
             
             # Update last progress time
             last_progress_time = current_time
@@ -159,7 +168,11 @@ def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="oper
         return None, exception[0]
         
     if is_finished[0]:
-        logger.info(f"{description} completed successfully")
+        # Log completion of long-running operation
+        if any(op in description.lower() for op in LONG_RUNNING_OPERATIONS):
+            logger.info(f"Long-running operation completed: {description}")
+        else:
+            logger.info(f"Operation completed: {description}")
     else:
         logger.warning(f"{description} did not complete within {timeout_seconds} seconds")
     return result[0], None
@@ -647,6 +660,10 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
     global current_operation
     current_operation = "audio transcription"
     
+    # Track timing statistics
+    chunk_times = []
+    start_time = time.time()
+    
     # Get a normalized version of the audio file for transcription
     normalized_audio_path = normalize_audio_for_transcription(audio_file_path, temp_dir)
     
@@ -677,54 +694,6 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
                     dst.write(src.read())
                     
             return transcript
-        
-        # Check for direct SRT file as fallback
-        elif os.path.exists(direct_srt_path):
-            print(f"Found existing SRT file: {direct_srt_path}")
-            # Ask user if they want to use existing SRT or regenerate
-            if not get_user_confirmation(
-                f"Found existing subtitle file for {audio_basename}. Use it instead of transcribing again?", 
-                default=True,
-                non_interactive=non_interactive
-            ):
-                print("User chose to regenerate transcript.")
-            else:
-                print("Using existing subtitle file")
-                # Parse SRT into transcript format
-                subtitles = parse_srt(direct_srt_path)
-                
-                # Create a simplified transcript object from SRT
-                transcript = {"segments": []}
-                for sub in subtitles:
-                    transcript["segments"].append({
-                        "start": sub["start"],
-                        "end": sub["end"],
-                        "text": sub["text"]
-                    })
-                
-                # Still need to generate VTT if it doesn't exist
-                if not os.path.exists(direct_vtt_path):
-                    with open(direct_vtt_path, 'w', encoding='utf-8') as vtt_file:
-                        vtt_file.write("WEBVTT\n\n")
-                        for sub in subtitles:
-                            start_time = format_timestamp(sub["start"], vtt=True)
-                            end_time = format_timestamp(sub["end"], vtt=True)
-                            vtt_file.write(f"{start_time} --> {end_time}\n")
-                            vtt_file.write(f"{sub['text'].strip()}\n\n")
-                
-                # Save to cache for future use
-                with open(cache_paths["json"], "w") as f:
-                    json.dump(transcript, f)
-                
-                with open(cache_paths["srt"], "w") as f:
-                    with open(direct_srt_path, "r") as src:
-                        f.write(src.read())
-                
-                with open(cache_paths["vtt"], "w") as f:
-                    with open(direct_vtt_path, "r") as src:
-                        f.write(src.read())
-                
-                return transcript
     
     # If we get here, we need to transcribe
     estimated_cost = estimate_transcription_cost(audio_file_path)
@@ -762,6 +731,7 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
     time_offset = 0
     
     for chunk_idx, chunk_path in enumerate(audio_chunks):
+        chunk_start = time.time()
         logger.info(f"Processing audio chunk {chunk_idx+1}/{len(audio_chunks)}: {chunk_path}")
         
         # If we have multiple chunks, recalculate duration of this chunk for accurate time offsets
@@ -887,6 +857,26 @@ def transcribe_audio(audio_file_path, force=False, transcript_dir="transcripts",
                             combined_transcript["segments"].append(segment_dict)
                     else:
                         logger.warning("Transcript does not have segments attribute")
+                
+                # Calculate and display timing statistics for this chunk
+                chunk_duration = time.time() - chunk_start
+                chunk_times.append(chunk_duration)
+                
+                # Calculate average time and remaining time
+                avg_time = sum(chunk_times) / len(chunk_times)
+                remaining_chunks = len(audio_chunks) - (chunk_idx + 1)
+                estimated_remaining_time = avg_time * remaining_chunks
+                
+                # Calculate progress percentage
+                progress = (chunk_idx + 1) / len(audio_chunks) * 100
+                
+                # Display progress and timing information
+                print(f"\nTranscription Progress: {progress:.1f}% ({chunk_idx+1}/{len(audio_chunks)} chunks)")
+                print(f"Current chunk duration: {chunk_duration:.1f}s")
+                print(f"Average chunk duration: {avg_time:.1f}s")
+                print(f"Estimated remaining time: {estimated_remaining_time/60:.1f} minutes")
+                print(f"Total elapsed time: {(time.time() - start_time)/60:.1f} minutes")
+                print("-" * 50)
                 
                 # Check for cancellation after API call
                 check_cancel()
@@ -1160,240 +1150,327 @@ def extract_segments(transcript, min_segment_duration=10, max_segment_duration=3
     print(f"Extracted {len(segments)} meaningful segments")
     return segments
 
-def extract_facts(segment_text):
-    """Extract key facts from a segment of text"""
+def extract_facts(text):
+    """Extract factual elements from the text"""
     try:
-        # Split text into smaller chunks if too long
-        max_chunk_length = 500  # Reduced from 1000
-        chunks = [segment_text[i:i+max_chunk_length] for i in range(0, len(segment_text), max_chunk_length)]
+        extraction_response = ai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are a fact extraction specialist for educational content. 
+                               Carefully analyze the podcast segment and extract ONLY factual elements
+                               that are explicitly mentioned in the transcript: names of people, places, 
+                               historical events, inventions, time periods, concepts, etc.
+                               
+                               Only extract elements that are SPECIFICALLY MENTIONED in the text.
+                               DO NOT add any information that is not explicitly stated.
+                               Be extremely precise with names, dates, and terminology.
+                               
+                               Format your response as JSON with the following structure:
+                               {
+                                   "extracted_elements": [
+                                       {
+                                           "type": "person/place/event/invention/concept/time_period",
+                                           "name": "exact name as mentioned in transcript",
+                                           "context": "brief context from the transcript"
+                                       }
+                                   ]
+                               }"""
+                },
+                {"role": "user", "content": text}
+            ],
+            response_format={"type": "json_object"}
+        )
         
-        all_facts = []
-        for chunk in chunks:
-            # Add timeout to API call
-            response = with_timeout(
-                lambda: ai_client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": "Extract 2-3 key facts from the text. Focus on historical events, dates, names, and significant concepts. Return as JSON array of strings."},
-                        {"role": "user", "content": chunk}
-                    ],
-                    response_format={"type": "json_object"},
-                    max_tokens=500  # Limit response size
-                ),
-                timeout=30  # 30 second timeout
-            )
-            
-            try:
-                facts = json.loads(response.choices[0].message.content)
-                if isinstance(facts, list):
-                    all_facts.extend(facts)
-                elif isinstance(facts, dict) and "facts" in facts:
-                    all_facts.extend(facts["facts"])
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse facts JSON: {response.choices[0].message.content}")
-                continue
-        
-        # Limit total facts per segment
-        return all_facts[:5]
-        
+        extracted_elements = json.loads(extraction_response.choices[0].message.content)
+        return extracted_elements.get("extracted_elements", [])
     except Exception as e:
         logger.error(f"Error extracting facts: {e}")
         return []
 
+def extract_key_elements(text):
+    """Extract key elements from the text"""
+    try:
+        extraction_response = ai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are a key element extraction specialist for educational content.
+                               Analyze the podcast segment and identify the most important elements
+                               that should be highlighted in the video.
+                               
+                               Focus on:
+                               1. Main topics or themes
+                               2. Key concepts or ideas
+                               3. Important names or terms
+                               4. Significant points or conclusions
+                               
+                               Format your response as JSON with the following structure:
+                               {
+                                   "key_elements": [
+                                       {
+                                           "name": "name or term",
+                                           "type": "topic/concept/name/point",
+                                           "importance": "high/medium/low",
+                                           "context": "brief context from the transcript"
+                                       }
+                                   ]
+                               }"""
+                },
+                {"role": "user", "content": text}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        extracted_elements = json.loads(extraction_response.choices[0].message.content)
+        return extracted_elements.get("key_elements", [])
+    except Exception as e:
+        logger.error(f"Error extracting key elements: {e}")
+        return []
+
+def research_element(element_name):
+    """Research a specific element"""
+    try:
+        research_response = ai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "Research this element and provide key facts. Be concise."
+                },
+                {"role": "user", "content": f"Research: {element_name}"}
+            ],
+            max_tokens=200  # Limit response size
+        )
+        
+        return research_response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error researching element {element_name}: {e}")
+        return f"Information about {element_name}"
+
+def generate_image_prompt(element_name, research):
+    """Generate an image prompt based on the research"""
+    try:
+        prompt_response = ai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "Create a clear, concise image generation prompt."
+                },
+                {"role": "user", "content": f"Element: {element_name}\nResearch: {research}"}
+            ],
+            max_tokens=150  # Limit response size
+        )
+        
+        return prompt_response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error generating image prompt for {element_name}: {e}")
+        return f"Visual representation of {element_name}"
+
+def generate_summary(text, facts, key_elements):
+    """Generate a summary of the segment"""
+    try:
+        summary_response = ai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are a video production specialist.
+                               Create a concise summary of this podcast segment that will be
+                               displayed in the video.
+                               
+                               The summary should:
+                               1. Be clear and engaging
+                               2. Highlight key points
+                               3. Be suitable for on-screen display
+                               4. Be limited to 50 words
+                               
+                               Format your response as a single, concise paragraph."""
+                },
+                {"role": "user", "content": f"Text: {text}\nFacts: {json.dumps(facts)}\nKey Elements: {json.dumps(key_elements)}"}
+            ]
+        )
+        
+        return summary_response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error generating summary: {e}")
+        return "Summary of the segment"
+
 def spell_check_content(content):
     """Spell check and correct content"""
     try:
-        # Split content into smaller chunks if too long
-        max_chunk_length = 300  # Reduced from 500
-        chunks = [content[i:i+max_chunk_length] for i in range(0, len(content), max_chunk_length)]
+        # Acknowledge progress before spell check
+        logger.info(f"Starting spell check for content")
         
-        corrected_chunks = []
-        for chunk in chunks:
-            # Add timeout to API call
-            response = with_timeout(
-                lambda: ai_client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": "Check spelling and grammar. Return corrected text only, no explanations."},
-                        {"role": "user", "content": chunk}
-                    ],
-                    response_format={"type": "text"},
-                    max_tokens=300  # Limit response size
-                ),
-                timeout=30  # 30 second timeout
-            )
-            
-            corrected_chunks.append(response.choices[0].message.content)
+        # Update current operation for progress monitoring
+        global current_operation
+        current_operation = "spell checking content"
         
-        return " ".join(corrected_chunks)
+        # Simplified prompt for faster processing
+        spell_check_response = ai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "Fix spelling and grammar. Return corrected text only."
+                },
+                {"role": "user", "content": content}
+            ],
+            max_tokens=500  # Limit response size
+        )
         
+        # Acknowledge progress after spell check
+        logger.info(f"Completed spell check for content")
+        
+        return spell_check_response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Error spell checking: {e}")
+        logger.error(f"Error during spell check: {e}")
         return content
 
-def enhance_segments(segments):
-    """Use AI API to enhance each segment with accurate factual content and research"""
+def enhance_segments(segments, non_interactive=False):
+    """Enhance segments with AI-generated descriptions and historical context"""
     global current_operation
-    current_operation = "enhancing segments with AI"
+    current_operation = "enhancing segments"
     
+    print("Enhancing segments with AI. This may take several minutes...")
     print("Enhancing segments with well-researched contextual information...")
     
-    enhanced_segments = []
+    # Track timing statistics
+    segment_times = []
+    start_time = time.time()
     
     for i, segment in enumerate(segments):
+        segment_start = time.time()
+        current_operation = f"enhancing segment {i+1}/{len(segments)}"
         print(f"Enhancing segment {i+1}/{len(segments)}...")
         check_cancel()
         
         try:
-            # Step 1: Extract key facts, names, concepts from transcript
-            current_operation = f"extracting facts from segment {i+1}/{len(segments)}"
-            extraction_response = ai_client.chat.completions.create(
-                model=chat_model,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": """You are a fact extraction specialist for educational content. 
-                                   Carefully analyze the podcast segment and extract ONLY factual elements
-                                   that are explicitly mentioned in the transcript: names of people, places, 
-                                   historical events, inventions, time periods, concepts, etc.
-                                   
-                                   Only extract elements that are SPECIFICALLY MENTIONED in the text.
-                                   DO NOT add any information that is not explicitly stated.
-                                   Be extremely precise with names, dates, and terminology.
-                                   
-                                   Format your response as JSON with the following structure:
-                                   {
-                                       "extracted_elements": [
-                                           {
-                                               "type": "person/place/event/invention/concept/time_period",
-                                               "name": "exact name as mentioned in transcript",
-                                               "context": "brief context from the transcript"
-                                           }
-                                       ]
-                                   }"""
-                    },
-                    {"role": "user", "content": segment["text"]}
-                ],
-                response_format={"type": "json_object"}
-            )
+            # Extract facts and key elements from the segment
+            facts = extract_facts(segment["text"])
+            key_elements = extract_key_elements(segment["text"])
             
-            extracted_elements = json.loads(extraction_response.choices[0].message.content)
-            
-            # Step 2: Research each extracted element and create accurate content
-            researched_elements = []
-            
-            for j, element in enumerate(extracted_elements.get("extracted_elements", [])):
-                current_operation = f"researching element {j+1}/{len(extracted_elements.get('extracted_elements', []))} in segment {i+1}/{len(segments)}"
+            # Research each key element
+            for j, element in enumerate(key_elements):
+                current_operation = f"researching element {j+1}/{len(key_elements)} in segment {i+1}/{len(segments)}"
                 check_cancel()
                 
-                research_response = ai_client.chat.completions.create(
-                    model=chat_model,
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": """You are a meticulous educational researcher. 
-                                       Research the following element that was mentioned in a podcast.
-                                       Provide factually accurate information about this element.
-                                       
-                                       Focus on verified historical facts, dates, and descriptions.
-                                       Double-check any names, dates, and terminology for accuracy.
-                                       Be concise but comprehensive.
-                                       
-                                       Also create a specific, historically accurate image prompt that 
-                                       will generate an authentic visual representation.
-                                       
-                                       Format your response as JSON with the following structure:
-                                       {
-                                           "type": "element type",
-                                           "name": "precise name with correct spelling",
-                                           "description": "factual, well-researched description limited to 100 words",
-                                           "visual_caption": "short caption for the visual (limited to 40 words)",
-                                           "image_prompt": "detailed, historically accurate prompt for image generation"
-                                       }"""
-                        },
-                        {"role": "user", "content": f"Research this element from a podcast: {element['name']}. Context from podcast: {element['context']}"}
-                    ],
-                    response_format={"type": "json_object"}
-                )
+                # Acknowledge progress before API call
+                logger.info(f"Starting research for element {j+1}/{len(key_elements)} in segment {i+1}/{len(segments)}")
                 
-                researched_element = json.loads(research_response.choices[0].message.content)
-                researched_elements.append(researched_element)
+                # Research the element
+                research = research_element(element["name"])
                 
-                # Spell check the content
+                # Acknowledge progress after API call
+                logger.info(f"Completed research for element {j+1}/{len(key_elements)} in segment {i+1}/{len(segments)}")
+                
+                # Spell check the research
                 current_operation = f"spell checking element {j+1}"
                 check_cancel()
+                
+                # Acknowledge progress before spell check
+                logger.info(f"Starting spell check for element {j+1}")
                 
                 spell_check_response = ai_client.chat.completions.create(
                     model=chat_model,
                     messages=[
                         {
                             "role": "system", 
-                            "content": """You are a professional copy editor and proofreader.
-                                       Carefully check the following content for spelling, grammar, and factual accuracy.
-                                       Ensure all names, terminology, and dates are correctly spelled.
-                                       
-                                       Return the corrected content in the same JSON structure.
-                                       If no corrections are needed, return the original content."""
+                            "content": "Fix spelling and grammar. Return corrected text only."
                         },
-                        {"role": "user", "content": json.dumps(researched_element)}
+                        {"role": "user", "content": research}
                     ],
-                    response_format={"type": "json_object"}
+                    max_tokens=200  # Limit response size
                 )
                 
-                # Replace with spell-checked content
-                researched_elements[-1] = json.loads(spell_check_response.choices[0].message.content)
+                # Acknowledge progress after spell check
+                logger.info(f"Completed spell check for element {j+1}")
                 
-                # Avoid rate limiting
-                time.sleep(0.5)
+                element["research"] = spell_check_response.choices[0].message.content
+                
+                # Generate image prompt
+                current_operation = f"generating image prompt for element {j+1}"
+                check_cancel()
+                
+                # Acknowledge progress before image prompt generation
+                logger.info(f"Starting image prompt generation for element {j+1}")
+                
+                image_prompt = generate_image_prompt(element["name"], element["research"])
+                
+                # Acknowledge progress after image prompt generation
+                logger.info(f"Completed image prompt generation for element {j+1}")
+                
+                element["image_prompt"] = image_prompt
             
-            # Step 3: Create the final enhanced segment with summary and transition
-            current_operation = f"finalizing segment {i+1}/{len(segments)}"
+            # Generate summary
+            current_operation = f"generating summary for segment {i+1}"
             check_cancel()
             
-            finalization_response = ai_client.chat.completions.create(
+            # Acknowledge progress before summary generation
+            logger.info(f"Starting summary generation for segment {i+1}")
+            
+            summary = generate_summary(segment["text"], facts, key_elements)
+            
+            # Acknowledge progress after summary generation
+            logger.info(f"Completed summary generation for segment {i+1}")
+            
+            # Spell check the summary
+            current_operation = f"spell checking summary for segment {i+1}"
+            check_cancel()
+            
+            # Acknowledge progress before summary spell check
+            logger.info(f"Starting summary spell check for segment {i+1}")
+            
+            spell_check_response = ai_client.chat.completions.create(
                 model=chat_model,
                 messages=[
                     {
                         "role": "system", 
-                        "content": """You are a video production specialist.
-                                   Create a concise summary and visual plan for this podcast segment.
-                                   Use the given transcript and researched elements to create an engaging video segment.
-                                   
-                                   Keep all text concise for on-screen display.
-                                   Ensure all text is correctly spelled and grammatically perfect.
-                                   Choose appropriate transition styles based on content.
-                                   
-                                   Format your response as JSON with the following structure:
-                                   {
-                                       "summary": "brief summary of the segment (50 words max)",
-                                       "key_elements": [LIST OF RESEARCHED ELEMENTS],
-                                       "caption": "main caption for this segment (30 words max)",
-                                       "subtitle_display": "always/important_parts/none",
-                                       "transition_style": "cut/fade/slide/zoom"
-                                   }"""
+                        "content": "You are a professional proofreader. Fix any spelling or grammar errors in this text that will be used as an image generation prompt. Maintain the same meaning but ensure perfect spelling."
                     },
-                    {"role": "user", "content": f"Transcript: {segment['text']}\n\nResearched Elements: {json.dumps(researched_elements)}"}
-                ],
-                response_format={"type": "json_object"}
+                    {"role": "user", "content": summary}
+                ]
             )
             
-            enhancement = json.loads(finalization_response.choices[0].message.content)
-            # Replace key_elements with our researched elements to maintain consistency
-            enhancement["key_elements"] = researched_elements
-            enhanced_segment = {**segment, **enhancement}
-            enhanced_segments.append(enhanced_segment)
+            # Acknowledge progress after summary spell check
+            logger.info(f"Completed summary spell check for segment {i+1}")
+            
+            # Update segment with enhanced information
+            segment["facts"] = facts
+            segment["key_elements"] = key_elements
+            segment["summary"] = spell_check_response.choices[0].message.content
+            
+            # Calculate and display timing statistics
+            segment_duration = time.time() - segment_start
+            segment_times.append(segment_duration)
+            
+            # Calculate average time and remaining time
+            avg_time = sum(segment_times) / len(segment_times)
+            remaining_segments = len(segments) - (i + 1)
+            estimated_remaining_time = avg_time * remaining_segments
+            
+            # Calculate progress percentage
+            progress = (i + 1) / len(segments) * 100
+            
+            # Display progress and timing information
+            print(f"\nProgress: {progress:.1f}% ({i+1}/{len(segments)} segments)")
+            print(f"Current segment duration: {segment_duration:.1f}s")
+            print(f"Average segment duration: {avg_time:.1f}s")
+            print(f"Estimated remaining time: {estimated_remaining_time/60:.1f} minutes")
+            print(f"Total elapsed time: {(time.time() - start_time)/60:.1f} minutes")
+            print("-" * 50)
             
         except KeyboardInterrupt:
             print(f"\nEnhancement cancelled during segment {i+1}")
-            # Return what we have so far, or None if we don't have any segments
-            return enhanced_segments if enhanced_segments else None
+            return segments
         except Exception as e:
             print(f"Error enhancing segment {i+1}: {e}")
-            # Continue with the next segment instead of failing the entire process
             continue
     
-    current_operation = "segment enhancement"
-    return enhanced_segments
+    return segments
 
 def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, non_interactive=False):
     """Generate historically accurate visuals for each enhanced segment"""
@@ -1404,6 +1481,10 @@ def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, 
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+    
+    # Track timing statistics
+    segment_times = []
+    start_time = time.time()
     
     # Calculate estimated total cost
     num_images = sum(1 + len(segment.get("key_elements", [])) for segment in enhanced_segments)
@@ -1424,6 +1505,7 @@ def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, 
             # TODO: Use placeholder images
     
     for i, segment in enumerate(enhanced_segments):
+        segment_start = time.time()
         current_operation = f"generating visuals for segment {i+1}/{len(enhanced_segments)}"
         check_cancel()
         
@@ -1433,25 +1515,12 @@ def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, 
         
         try:
             # Generate main image for the segment
-            # Spell check the summary before using it as a prompt
-            spell_check_response = ai_client.chat.completions.create(
-                model=chat_model,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are a professional proofreader. Fix any spelling or grammar errors in this text that will be used as an image generation prompt. Maintain the same meaning but ensure perfect spelling."
-                    },
-                    {"role": "user", "content": segment["summary"]}
-                ]
-            )
-            
-            main_image_prompt = spell_check_response.choices[0].message.content
             main_image_path = os.path.join(segment_dir, "main.png")
             
             if not os.path.exists(main_image_path):
                 print(f"Generating main image for segment {i+1}/{len(enhanced_segments)}...")
                 success = generate_image_stability(
-                    main_image_prompt, 
+                    segment["summary"], 
                     main_image_path,
                     allow_dalle_fallback=allow_dalle_fallback,
                     non_interactive=non_interactive
@@ -1471,30 +1540,12 @@ def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, 
                 current_operation = f"generating image for element {j+1} in segment {i+1}"
                 check_cancel()
                 
-                # Get the image prompt and spell check it
-                image_prompt = element.get("image_prompt", "")
-                if not image_prompt and "name" in element:
-                    # Create a basic prompt if none exists
-                    image_prompt = f"Historically accurate depiction of {element['name']}"
-                
-                # Spell check the prompt
-                spell_check_response = ai_client.chat.completions.create(
-                    model=chat_model,
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": "You are a professional proofreader. Fix any spelling or grammar errors in this text that will be used as an image generation prompt. Maintain the same meaning but ensure perfect spelling."
-                        },
-                        {"role": "user", "content": image_prompt}
-                    ]
-                )
-                
-                checked_prompt = spell_check_response.choices[0].message.content
+                element_image_path = os.path.join(segment_dir, f"element_{j}.png")
                 
                 if not os.path.exists(element_image_path):
                     print(f"Generating image for element {j+1}/{len(segment.get('key_elements', []))} in segment {i+1}/{len(enhanced_segments)}...")
                     success = generate_image_stability(
-                        checked_prompt, 
+                        element["image_prompt"], 
                         element_image_path, 
                         width=640, 
                         height=480,
@@ -1516,139 +1567,86 @@ def generate_visuals(enhanced_segments, output_dir, allow_dalle_fallback=False, 
             
             segment["element_images"] = element_images
             
+            # Calculate and display timing statistics
+            segment_duration = time.time() - segment_start
+            segment_times.append(segment_duration)
+            
+            # Calculate average time and remaining time
+            avg_time = sum(segment_times) / len(segment_times)
+            remaining_segments = len(enhanced_segments) - (i + 1)
+            estimated_remaining_time = avg_time * remaining_segments
+            
+            # Calculate progress percentage
+            progress = (i + 1) / len(enhanced_segments) * 100
+            
+            # Display progress and timing information
+            print(f"\nVisual Generation Progress: {progress:.1f}% ({i+1}/{len(enhanced_segments)} segments)")
+            print(f"Current segment duration: {segment_duration:.1f}s")
+            print(f"Average segment duration: {avg_time:.1f}s")
+            print(f"Estimated remaining time: {estimated_remaining_time/60:.1f} minutes")
+            print(f"Total elapsed time: {(time.time() - start_time)/60:.1f} minutes")
+            print("-" * 50)
+            
         except KeyboardInterrupt:
             print(f"\nVisual generation cancelled during segment {i+1}")
-            # Return what we have so far
             return enhanced_segments
     
     return enhanced_segments
 
 def generate_image_stability(prompt, output_path, width=768, height=512, allow_dalle_fallback=False, non_interactive=False):
-    """Generate image using Stability API with historically accurate content focus"""
-    global current_operation, temp_files
+    """Generate an image using Stability API with fallback to DALL-E"""
+    global current_operation
     current_operation = "generating image"
     
-    # Register the output path as a temporary file that might need cleanup
-    temp_files.append(output_path)
-    
-    # Add accuracy and historical details to the prompt
-    enhanced_prompt = f"""Create a historically accurate, factually correct image of {prompt}.
-    Include authentic period details and accurate visual elements.
-    Ensure all text elements are clearly legible and correctly spelled.
-    Focus on educational value and historical authenticity."""
-    
-    if stability_api is None:
-        print("Stability API not initialized.")
-        if not allow_dalle_fallback and not get_user_confirmation(
-            "Stability API not available. Use more expensive DALL-E instead?",
-            default=False,
-            non_interactive=non_interactive
-        ):
-            print("Image generation skipped.")
-            return False
-        use_dalle = True
-    else:
-        use_dalle = False
-    
-    if not use_dalle:
-        try:
-            check_cancel()
-            current_operation = "generating image with Stability AI"
-            
-            answers = stability_api.generate(
-                prompt=enhanced_prompt,
-                width=width,
-                height=height,
-                samples=1,
-                steps=30,
-                cfg_scale=8.0  # Increase CFG scale for better prompt adherence
-            )
-            
-            check_cancel()
-            
-            for resp in answers:
-                for artifact in resp.artifacts:
-                    if artifact.type == generation.ARTIFACT_IMAGE:
-                        check_cancel()
-                        with open(output_path, "wb") as f:
-                            f.write(artifact.binary)
-                        print(f"Image saved to {output_path}")
-                        return True
-        except KeyboardInterrupt:
-            print("Image generation cancelled")
-            return False
-        except Exception as e:
-            print(f"Error generating image with Stability API: {e}")
-            
-            if not allow_dalle_fallback and not get_user_confirmation(
-                "Stability API failed. Use more expensive DALL-E instead?",
-                default=False,
-                non_interactive=non_interactive
-            ):
-                print("Image generation skipped after Stability failure.")
-                return False
-            use_dalle = True
-    
-    # If we get here, we need to use DALL-E
-    estimated_cost = 0.04  # Approximate cost of a DALL-E 3 standard image
-    print(f"Using DALL-E. Estimated cost per image: ${estimated_cost:.2f}")
-    
     try:
-        check_cancel()
-        current_operation = "generating image with DALL-E"
+        # Acknowledge progress before image generation
+        logger.info(f"Starting Stability API image generation: {os.path.basename(output_path)}")
+        print(f"Generating image using Stability API...")
         
-        # Check if we should use OpenAI or DeepSeek for fallback
-        if deepseek_api_key:
-            # Try to use DeepSeek's image generation if available
-            try:
-                response = ai_client.images.generate(
-                    model="deepseek-image",
-                    prompt=enhanced_prompt,
-                    size="1024x1024",
-                    quality="standard",
-                    n=1,
-                )
-                image_url = response.data[0].url
-            except Exception as deepseek_img_error:
-                print(f"DeepSeek image generation failed: {deepseek_img_error}. Falling back to OpenAI.")
-                # Fall back to OpenAI
-                temp_client = OpenAI(api_key=openai_api_key)
-                response = temp_client.images.generate(
-                    model="dall-e-3",
-                    prompt=enhanced_prompt,
-                    size="1024x1024",
-                    quality="standard",
-                    n=1,
-                )
-                image_url = response.data[0].url
+        # Create the image generation request
+        request = stability_pb2.GenerationRequest(
+            prompt=prompt,
+            width=width,
+            height=height,
+            steps=30,
+            cfg_scale=7.0,
+            sampler=stability_pb2.SAMPLER_K_DPMPP_2M
+        )
+        
+        # Send the request to Stability API
+        response = stability_client.Generate(request)
+        
+        # Process the response
+        if response.artifacts:
+            # Save the generated image
+            with open(output_path, "wb") as f:
+                f.write(response.artifacts[0].binary)
+            
+            # Acknowledge successful image generation
+            logger.info(f"Successfully generated image: {os.path.basename(output_path)}")
+            print(f"✓ Image generated successfully: {os.path.basename(output_path)}")
+            return True
         else:
-            # Use OpenAI directly
-            response = ai_client.images.generate(
-                model="dall-e-3",
-                prompt=enhanced_prompt,
-                size="1024x1024",
-                quality="standard",
-                n=1,
-            )
-            image_url = response.data[0].url
+            logger.warning(f"No image generated by Stability API")
+            print(f"✗ Stability API failed to generate image")
+            
+            if allow_dalle_fallback:
+                logger.info("Attempting DALL-E fallback")
+                print("Attempting fallback to DALL-E...")
+                return generate_image_dalle(prompt, output_path, width, height)
+            else:
+                return False
+                
+    except Exception as e:
+        logger.error(f"Error generating image with Stability API: {e}")
+        print(f"✗ Error generating image: {e}")
         
-        # Download the image
-        check_cancel()
-        image_data = requests.get(image_url).content
-        
-        check_cancel()
-        with open(output_path, "wb") as f:
-            f.write(image_data)
-        
-        print(f"DALL-E image saved to {output_path}")
-        return True
-        
-    except KeyboardInterrupt:
-        print("DALL-E image generation cancelled")
-        return False
-    except Exception as e2:
-        print(f"Error in DALL-E image generation: {e2}")
-        return False
+        if allow_dalle_fallback:
+            logger.info("Attempting DALL-E fallback after error")
+            print("Attempting fallback to DALL-E...")
+            return generate_image_dalle(prompt, output_path, width, height)
+        else:
+            return False
 
 def create_video_segment(segment, output_path, audio_file_path, style="modern"):
     """Create a video segment from an enhanced segment with subtitles"""
@@ -1848,6 +1846,10 @@ def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
     
     print("Creating final video...")
     
+    # Track timing statistics
+    segment_times = []
+    start_time = time.time()
+    
     # Register output as potential temporary file
     temp_files.append(output_path)
     
@@ -1861,6 +1863,7 @@ def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
     # Create video segments
     video_segments = []
     for i, segment in enumerate(enhanced_segments):
+        segment_start = time.time()
         current_operation = f"creating video segment {i+1}/{len(enhanced_segments)}"
         check_cancel()
         
@@ -1872,6 +1875,26 @@ def create_final_video(enhanced_segments, audio_file, output_path, temp_dir):
         elif is_cancelling:
             print("Final video creation cancelled")
             return None
+            
+        # Calculate and display timing statistics
+        segment_duration = time.time() - segment_start
+        segment_times.append(segment_duration)
+        
+        # Calculate average time and remaining time
+        avg_time = sum(segment_times) / len(segment_times)
+        remaining_segments = len(enhanced_segments) - (i + 1)
+        estimated_remaining_time = avg_time * remaining_segments
+        
+        # Calculate progress percentage
+        progress = (i + 1) / len(enhanced_segments) * 100
+        
+        # Display progress and timing information
+        print(f"\nVideo Creation Progress: {progress:.1f}% ({i+1}/{len(enhanced_segments)} segments)")
+        print(f"Current segment duration: {segment_duration:.1f}s")
+        print(f"Average segment duration: {avg_time:.1f}s")
+        print(f"Estimated remaining time: {estimated_remaining_time/60:.1f} minutes")
+        print(f"Total elapsed time: {(time.time() - start_time)/60:.1f} minutes")
+        print("-" * 50)
     
     # Check if we have any segments to work with
     if not video_segments:
