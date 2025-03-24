@@ -315,10 +315,144 @@ def download(task_id):
     flash('File not ready for download.', 'error')
     return redirect(url_for('status', task_id=task_id))
 
+@app.route('/test_apis')
+def test_apis_endpoint():
+    """Test endpoint to verify API connectivity"""
+    results = test_apis()
+    
+    # If the request wants JSON (likely an API call), return JSON
+    if request.headers.get('Accept') == 'application/json' or request.args.get('format') == 'json':
+        return jsonify(results)
+    
+    # Otherwise render the HTML template (for browser viewing)
+    return render_template('test_apis.html', test_results=results)
+
+def test_apis():
+    """Test API connectivity with OpenAI and Stability AI"""
+    results = {
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'tests': []
+    }
+    
+    # Test OpenAI API
+    openai_result = {
+        'api': 'OpenAI',
+        'status': 'failed',
+        'message': ''
+    }
+    
+    try:
+        # Check if OpenAI API key is set
+        openai_api_key = os.environ.get('OPENAI_API_KEY')
+        if not openai_api_key:
+            openai_result['message'] = 'API key not found in environment'
+        else:
+            # Make a minimal API request to OpenAI using subprocess
+            test_cmd = [
+                sys.executable,
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "podcast-to-video.py"),
+                "--test_openai"
+            ]
+            
+            logger.info(f"Testing OpenAI API connection")
+            proc = subprocess.run(test_cmd, capture_output=True, text=True, env=os.environ)
+            
+            # Check if the command was successful and look for success message
+            if proc.returncode == 0 or "Successfully connected to OpenAI API" in proc.stdout:
+                openai_result['status'] = 'success'
+                openai_result['message'] = 'Connection successful'
+            else:
+                # Filter out MoviePy errors from the message
+                error_msg = proc.stderr.strip() or proc.stdout.strip() or 'Unknown error'
+                if "MoviePy" not in error_msg:
+                    openai_result['message'] = error_msg
+                else:
+                    # If it's just a MoviePy error but the API test succeeded
+                    if "Successfully connected to OpenAI API" in proc.stdout:
+                        openai_result['status'] = 'success'
+                        openai_result['message'] = 'Connection successful (MoviePy warnings can be ignored)'
+                    else:
+                        openai_result['message'] = 'API test failed'
+    except Exception as e:
+        openai_result['message'] = f'Error: {str(e)}'
+    
+    results['tests'].append(openai_result)
+    
+    # Test Stability API
+    stability_result = {
+        'api': 'Stability AI',
+        'status': 'failed',
+        'message': ''
+    }
+    
+    try:
+        # Check if Stability API key is set
+        stability_api_key = os.environ.get('STABILITY_API_KEY')
+        if not stability_api_key:
+            stability_result['message'] = 'API key not found in environment'
+        else:
+            # Make a minimal API request to Stability AI using subprocess
+            test_cmd = [
+                sys.executable,
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "podcast-to-video.py"),
+                "--test_stability"
+            ]
+            
+            logger.info(f"Testing Stability API connection")
+            proc = subprocess.run(test_cmd, capture_output=True, text=True, env=os.environ)
+            
+            # Check if the command was successful and look for success message
+            if proc.returncode == 0 or "Successfully connected to Stability API" in proc.stdout:
+                stability_result['status'] = 'success'
+                stability_result['message'] = 'Connection successful'
+            else:
+                # Filter out MoviePy errors from the message
+                error_msg = proc.stderr.strip() or proc.stdout.strip() or 'Unknown error'
+                if "MoviePy" not in error_msg:
+                    stability_result['message'] = error_msg
+                else:
+                    # If it's just a MoviePy error but the API test succeeded
+                    if "Successfully connected to Stability API" in proc.stdout:
+                        stability_result['status'] = 'success'
+                        stability_result['message'] = 'Connection successful (MoviePy warnings can be ignored)'
+                    else:
+                        stability_result['message'] = 'API test failed'
+    except Exception as e:
+        stability_result['message'] = f'Error: {str(e)}'
+    
+    results['tests'].append(stability_result)
+    
+    # Overall status
+    all_success = all(test['status'] == 'success' for test in results['tests'])
+    results['overall_status'] = 'success' if all_success else 'failed'
+    
+    return results
+
+def run_test_harness():
+    """Run API tests from the command line"""
+    logger.info("Running API test harness...")
+    results = test_apis()
+    
+    # Print results in a formatted way
+    print(f"\n=== API Test Results ({results['timestamp']}) ===")
+    print(f"Overall Status: {results['overall_status'].upper()}")
+    print("\nDetailed Results:")
+    
+    for test in results['tests']:
+        print(f"- {test['api']}: {test['status'].upper()} - {test['message']}")
+    
+    # Return success if all tests passed
+    return results['overall_status'] == 'success'
+
 # Note: We're using subprocess to call the original podcast-to-video.py script
 # rather than importing its components directly to avoid dependency issues with MoviePy
 
 if __name__ == '__main__':
+    # Check for test command
+    if len(sys.argv) > 1 and sys.argv[1] == '--test':
+        success = run_test_harness()
+        sys.exit(0 if success else 1)
+    
     # Create required directories
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)

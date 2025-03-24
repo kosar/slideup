@@ -21,6 +21,8 @@ import queue
 import base64
 import wave
 import shutil
+from datetime import datetime
+import numpy as np
 
 # Set up logging
 logging.basicConfig(
@@ -40,6 +42,51 @@ TIME_LIMIT_MS = int(TIME_LIMIT_SECONDS * 1000)  # Convert to milliseconds
 # Create a separate logger for HTTP requests with reduced verbosity
 http_logger = logging.getLogger('http')
 http_logger.setLevel(logging.WARNING)  # Only show warnings for HTTP issues
+
+# Global variables to track state
+current_operation = "initializing"
+is_cancelling = False
+temp_files = []
+start_time = time.time()
+last_progress_time = time.time()  # For tracking progress updates
+progress_thread = None
+task_start_time = None  # Track when current task started
+task_name = None  # Track current task name
+task_stack = []  # Stack to track nested operations
+min_task_duration = 0.5  # Increased minimum duration to log (in seconds)
+
+# Initialize optional dependencies as None
+moviepy_editor = None
+MOVIEPY_AVAILABLE = False
+
+# Import optional modules
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    logger.error("OpenAI library not installed. Run: pip install openai")
+    OPENAI_AVAILABLE = False
+
+try:
+    from stability_sdk import client as stability_client
+    import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
+    STABILITY_AVAILABLE = True
+except ImportError:
+    logger.error("Stability SDK not installed. Run: pip install stability-sdk")
+    STABILITY_AVAILABLE = False
+
+def init_moviepy():
+    """Initialize MoviePy when needed"""
+    global moviepy_editor, MOVIEPY_AVAILABLE
+    if moviepy_editor is None:
+        try:
+            import moviepy.editor as moviepy_editor
+            MOVIEPY_AVAILABLE = True
+            logger.info("Successfully imported MoviePy")
+        except ImportError as e:
+            logger.error(f"MoviePy import error: {e}")
+            MOVIEPY_AVAILABLE = False
+    return MOVIEPY_AVAILABLE
 
 # Global variables to track state
 current_operation = "initializing"
@@ -184,31 +231,6 @@ def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="oper
         logger.warning(f"{description} did not complete within {timeout_seconds} seconds")
     return result[0], None
 
-# Import required modules
-try:
-    from moviepy import AudioFileClip, ImageClip, TextClip, CompositeVideoClip, concatenate_videoclips, VideoFileClip
-    MOVIEPY_AVAILABLE = True
-    logger.info("Successfully imported MoviePy")
-except ImportError as e:
-    logger.error(f"MoviePy import error: {e}")
-    MOVIEPY_AVAILABLE = False
-
-# Optional API modules
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    logger.error("OpenAI library not installed. Run: pip install openai")
-    OPENAI_AVAILABLE = False
-
-try:
-    from stability_sdk import client as stability_client
-    import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
-    STABILITY_AVAILABLE = True
-except ImportError:
-    logger.error("Stability SDK not installed. Run: pip install stability-sdk")
-    STABILITY_AVAILABLE = False
-
 # Add after other global variables
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -252,12 +274,78 @@ def cache_research_results(element_name, research, image_prompt):
     except Exception as e:
         logger.warning(f"Error caching results for {element_name}: {e}")
 
+def test_openai_api():
+    """Test OpenAI API connectivity."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        logger.error("OpenAI API key is not set in environment variables")
+        return False
+    
+    try:
+        # Initialize the OpenAI client
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        
+        # Make a minimal completion request
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Hello!"}],
+            max_tokens=5
+        )
+        
+        logger.info("Successfully connected to OpenAI API")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to connect to OpenAI API: {str(e)}")
+        return False
+
+def test_stability_api():
+    """Test Stability API connectivity."""
+    if not os.environ.get("STABILITY_API_KEY"):
+        logger.error("Stability API key is not set in environment variables")
+        return False
+    
+    try:
+        # Make a simple GET request to check API status
+        headers = {
+            "Authorization": f"Bearer {os.environ.get('STABILITY_API_KEY')}"
+        }
+        response = requests.get("https://api.stability.ai/v1/user/balance", headers=headers)
+        
+        if response.status_code == 200:
+            logger.info("Successfully connected to Stability API")
+            return True
+        else:
+            logger.error(f"Failed to connect to Stability API: {response.status_code} {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to connect to Stability API: {str(e)}")
+        return False
+
+def setup_signal_handling():
+    """Set up signal handlers for graceful termination."""
+    def signal_handler(sig, frame):
+        logger.info(f"Received signal {sig}, shutting down gracefully")
+        sys.exit(0)
+    
+    # Register SIGINT (Ctrl+C) handler
+    signal.signal(signal.SIGINT, signal_handler)
+    # Register SIGTERM handler
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    logger.info("Signal handlers registered")
+
+def cleanup():
+    """Clean up resources before exiting."""
+    logger.info("Cleaning up resources")
+    # Add any cleanup code here (temp files, etc.)
+
 def main():
     parser = argparse.ArgumentParser(description='Convert podcast audio to video with AI-generated visuals')
     parser.add_argument('--audio', type=str, required=True, help='Path to input audio file')
     parser.add_argument('--output', type=str, default='enhanced_podcast.mp4', help='Path to output video file')
     parser.add_argument('--limit_to_one_minute', action='store_true', help='Limit processing to first minute of audio')
     parser.add_argument('--non_interactive', action='store_true', help='Run in non-interactive mode')
+    parser.add_argument('--test_openai', action='store_true', help='Test OpenAI API connectivity')
+    parser.add_argument('--test_stability', action='store_true', help='Test Stability API connectivity')
     args = parser.parse_args()
 
     # Set up signal handlers
@@ -537,7 +625,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
         logger.info(f"Segment start: {segment['start']:.2f}, end: {segment['end']:.2f}")
         
         # Create video clip with visuals
-        video_clip = ImageClip(segment["visuals"]["main_image"])
+        video_clip = moviepy_editor.ImageClip(segment["visuals"]["main_image"])
         segment_duration = segment["end"] - segment["start"]
         
         # Set video duration to match segment duration
@@ -566,7 +654,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
             raise ValueError(f"Audio extraction failed: {temp_audio} was not created")
         
         # Load the extracted audio
-        audio_clip = AudioFileClip(temp_audio)
+        audio_clip = moviepy_editor.AudioFileClip(temp_audio)
         logger.info(f"Audio clip duration: {audio_clip.duration:.2f} seconds")
         
         # Ensure audio duration matches video duration
@@ -608,7 +696,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
         
         # Verify the temporary output file
         if os.path.exists(temp_output):
-            output_clip = VideoFileClip(temp_output)
+            output_clip = moviepy_editor.VideoFileClip(temp_output)
             logger.info(f"Temp output file duration: {output_clip.duration:.2f} seconds")
             logger.info(f"Temp output file has audio: {output_clip.audio is not None}")
             if output_clip.audio is not None:
@@ -632,7 +720,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
             logger.info(f"Final output file created: {output_path}")
             
             # Final verification of the output file
-            final_clip = VideoFileClip(output_path)
+            final_clip = moviepy_editor.VideoFileClip(output_path)
             logger.info(f"Final output file duration: {final_clip.duration:.2f} seconds")
             logger.info(f"Final output file has audio: {final_clip.audio is not None}")
             if final_clip.audio is not None:
@@ -1075,7 +1163,7 @@ def validate_audio_file(audio_path):
         # Check if it's an MP3 file
         elif file_ext == '.mp3':
             # Use moviepy to get audio properties
-            audio = AudioFileClip(audio_path)
+            audio = moviepy_editor.AudioFileClip(audio_path)
             duration = audio.duration
             
             # Log audio properties
@@ -1123,7 +1211,7 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         transcription_client = OpenAI(api_key=openai_api_key)
         
         # Load audio file with moviepy to get duration
-        audio = AudioFileClip(audio_path)
+        audio = moviepy_editor.AudioFileClip(audio_path)
         original_duration = audio.duration
         logger.info(f"Original audio duration: {original_duration:.2f} seconds")
         
@@ -1574,4 +1662,45 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
         return None
 
 if __name__ == "__main__":
-    main()
+    try:
+        # Parse command line arguments
+        parser = argparse.ArgumentParser(description="Convert podcast audio to video with AI-generated visuals")
+        parser.add_argument("--input", help="Input audio file path")
+        parser.add_argument("--output", help="Output video file path")
+        parser.add_argument("--temp_dir", default="temp", help="Temporary directory for processing files")
+        parser.add_argument("--transcript_dir", default="transcripts", help="Directory for storing transcripts")
+        parser.add_argument("--transcribe_only", action="store_true", help="Only transcribe the audio, don't process further")
+        parser.add_argument("--force_transcription", action="store_true", help="Force transcription even if transcript exists")
+        parser.add_argument("--limit_to_one_minute", action="store_true", help="Limit processing to first minute of audio")
+        parser.add_argument("--non_interactive", action="store_true", help="Run in non-interactive mode")
+        parser.add_argument("--test_openai", action="store_true", help="Test OpenAI API connectivity")
+        parser.add_argument("--test_stability", action="store_true", help="Test Stability API connectivity")
+        args = parser.parse_args()
+        
+        # Setup signal handling for graceful termination
+        setup_signal_handling()
+        
+        # Register cleanup function to run at exit
+        atexit.register(cleanup)
+        
+        # Handle the test commands first
+        if args.test_openai:
+            success = test_openai_api()
+            sys.exit(0 if success else 1)
+            
+        if args.test_stability:
+            success = test_stability_api()
+            sys.exit(0 if success else 1)
+        
+        # Ensure the required arguments are provided
+        if not args.input:
+            logger.error("Input audio file path is required")
+            sys.exit(1)
+        
+        # Process the audio file
+        process_audio_file(args.input, args.output, args.limit_to_one_minute, args.non_interactive)
+
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)
