@@ -1272,7 +1272,11 @@ def extract_segments(transcript_path):
                 
                 # If we have a current segment and timestamp, this line should be the text
                 else:
-                    current_segment['text'] = line
+                    # If text already exists, append to it with a space
+                    if 'text' in current_segment:
+                        current_segment['text'] += ' ' + line
+                    else:
+                        current_segment['text'] = line
         
         # Add the last segment if it exists
         if current_segment:
@@ -1316,6 +1320,15 @@ def enhance_segments(segments, limit_to_one_minute=False):
             if is_cancelling:
                 logger.info("Enhancement cancelled by user")
                 return None
+            
+            # Validate segment has required fields
+            if not all(key in segment for key in ['text', 'timestamp']):
+                logger.warning(f"Skipping segment {i}/{total_segments} - missing required fields")
+                continue
+                
+            if not all(key in segment['timestamp'] for key in ['start', 'end']):
+                logger.warning(f"Skipping segment {i}/{total_segments} - missing timestamp fields")
+                continue
             
             # Get segment text and timestamps
             text = segment['text']
