@@ -1706,7 +1706,7 @@ if __name__ == "__main__":
             enhanced_segments, error = with_timeout(
                 enhance_segments,
                 args=(segments,),
-                timeout_seconds=900,  # 15 minute timeout
+                timeout_seconds=1200,  # 15 minute timeout
                 description="Segment enhancement"
             )
             
@@ -1729,7 +1729,7 @@ if __name__ == "__main__":
                     args.allow_dalle_fallback,
                     args.non_interactive
                 ),
-                timeout_seconds=900,  # 15 minute timeout
+                timeout_seconds=1200,  # 15 minute timeout
                 description="Visual generation"
             )
             
