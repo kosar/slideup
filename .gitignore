@@ -185,3 +185,4 @@ podcast2video/*.srt
 podcast2video/*.vtt
 podcast2video/cache
 podcast2video/enhanced_podcast.mp4
+podcast-to-video.py

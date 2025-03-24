@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger('podcast2video')
 
 # Global configuration
-TIME_LIMIT_SECONDS = 7.0  # Default time limit in seconds
+TIME_LIMIT_SECONDS = 60  # 6 minutes
 TIME_LIMIT_MS = int(TIME_LIMIT_SECONDS * 1000)  # Convert to milliseconds
 
 # Create a separate logger for HTTP requests with reduced verbosity
@@ -186,21 +186,9 @@ def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="oper
 
 # Import required modules
 try:
-    from pydub import AudioSegment
-    PYDUB_AVAILABLE = True
-except ImportError:
-    logger.error("PyDub not installed correctly. Run: pip install pydub")
-    PYDUB_AVAILABLE = False
-
-import wave
-
-# Correct moviepy imports
-try:
-    import moviepy
-    from moviepy import AudioFileClip, ImageClip, TextClip, CompositeVideoClip
-    from moviepy import concatenate_videoclips, VideoFileClip
+    from moviepy import AudioFileClip, ImageClip, TextClip, CompositeVideoClip, concatenate_videoclips, VideoFileClip
     MOVIEPY_AVAILABLE = True
-    logger.info("Successfully imported MoviePy version: " + moviepy.__version__)
+    logger.info("Successfully imported MoviePy")
 except ImportError as e:
     logger.error(f"MoviePy import error: {e}")
     MOVIEPY_AVAILABLE = False
@@ -265,25 +253,42 @@ def cache_research_results(element_name, research, image_prompt):
         logger.warning(f"Error caching results for {element_name}: {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert podcast to enhanced video")
-    parser.add_argument("--audio", required=True, help="Path to the podcast audio file (MP3 or WAV)")
-    parser.add_argument("--output", default="enhanced_podcast.mp4", help="Output video file path")
-    parser.add_argument("--temp_dir", default="temp", help="Temporary directory for intermediate files")
-    parser.add_argument("--subtitle", choices=["always", "important_parts", "none"], default="always",
-                      help="Subtitle display mode: always, important_parts, or none")
-    parser.add_argument("--skip_transcription", action="store_true", help="Skip transcription if SRT file exists")
-    parser.add_argument("--force_transcription", action="store_true", help="Force transcription even if SRT file exists")
-    parser.add_argument("--transcript_dir", default="transcripts", help="Directory to store cached transcripts")
-    parser.add_argument("--allow_dalle_fallback", action="store_true", help="Automatically allow DALL-E as a fallback without confirmation")
-    parser.add_argument("--non_interactive", action="store_true", help="Run in non-interactive mode (will use defaults for all confirmations)")
-    parser.add_argument("--debug", action="store_true", help="Run in debug mode with additional logging")
-    parser.add_argument("--limit_to_one_minute", action="store_true", help="Only process the first minute of audio")
-    parser.add_argument("--test_video", action="store_true", help="Test video generation with existing segments")
-    parser.add_argument("--test_mode", action="store_true", help="Run in test mode to only test video generation")
-    parser.add_argument("--segments_file", help="Path to a saved segments file for testing")
-    parser.add_argument("--save_segments", action="store_true", help="Save enhanced segments for later testing")
-    
-    return parser
+    parser = argparse.ArgumentParser(description='Convert podcast audio to video with AI-generated visuals')
+    parser.add_argument('--audio', type=str, required=True, help='Path to input audio file')
+    parser.add_argument('--output', type=str, default='enhanced_podcast.mp4', help='Path to output video file')
+    parser.add_argument('--limit_to_one_minute', action='store_true', help='Limit processing to first minute of audio')
+    parser.add_argument('--non_interactive', action='store_true', help='Run in non-interactive mode')
+    args = parser.parse_args()
+
+    # Set up signal handlers
+    signal.signal(signal.SIGINT, handle_exit_signal)
+    signal.signal(signal.SIGTERM, handle_exit_signal)
+
+    try:
+        # Check for required API keys
+        stability_key_available = bool(os.getenv('STABILITY_API_KEY'))
+        if not stability_key_available:
+            logger.error("STABILITY_API_KEY not found in environment variables")
+            sys.exit(1)
+
+        # Validate input audio file
+        if not validate_audio_file(args.audio):
+            sys.exit(1)
+
+        # Create necessary directories
+        os.makedirs("temp", exist_ok=True)
+        os.makedirs("transcripts", exist_ok=True)
+        os.makedirs("cache", exist_ok=True)
+
+        # Process the audio file
+        process_audio_file(args.audio, args.output, args.limit_to_one_minute, args.non_interactive)
+
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        cleanup()
 
 # Signal handler for clean shutdown
 def handle_exit_signal(signum, frame):
@@ -468,110 +473,60 @@ except Exception as e:
 # Initialize Stability API for images
 stability_api = None  # Initialize as None by default
 
-def generate_image_stability(prompt, output_path, width=640, height=480, steps=30, samples=1, allow_dalle_fallback=False, non_interactive=False):
-    """Generate an image using Stability API with optional DALL-E fallback"""
+def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=20, samples=1, non_interactive=False):
+    """Generate an image using Stability API"""
+    logger.info(f"Generating image with prompt: {prompt}")
+    logger.info(f"- Width: {width}")
+    logger.info(f"- Height: {height}")
+    logger.info(f"- Steps: {steps}")
+    logger.info(f"- Samples: {samples}")
+
     try:
-        # Log the request details
-        logger.info("Stability AI Image Generation Request:")
-        logger.info(f"- Prompt: {prompt}")
-        logger.info(f"- Output path: {output_path}")
-        logger.info(f"- Dimensions: {width}x{height}")
-        logger.info(f"- Allow DALL-E fallback: {allow_dalle_fallback}")
-        
-        if not stability_api:
-            logger.warning("Stability API not initialized")
-            if allow_dalle_fallback:
-                logger.info("Attempting DALL-E fallback due to missing Stability API")
-                return generate_image_dalle(prompt, output_path, width, height)
-            else:
-                logger.error("Stability API not working and DALL-E fallback not allowed")
-                return False
-        
-        # Generate the image with correct parameters
-        response = stability_api.post(
+        # Check if Stability API key is available
+        stability_key = os.getenv('STABILITY_API_KEY')
+        if not stability_key:
+            logger.error("STABILITY_API_KEY not found in environment variables")
+            return False
+
+        # Make API request to Stability
+        response = requests.post(
             "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {stability_key}"
+            },
             json={
                 "text_prompts": [{"text": prompt}],
-                "width": 1024,  # Use standard 1024x1024 dimensions
-                "height": 1024,
-                "steps": steps,
+                "cfg_scale": 7.5,
+                "height": height,
+                "width": width,
                 "samples": samples,
-                "cfg_scale": 8.0,
-                "style_preset": "photographic"  # Use a valid style preset
+                "steps": steps,
+                "style_preset": "photographic"
             }
         )
-        
-        # Log response details
-        logger.info("Received response from Stability API")
-        logger.info(f"- Status code: {response.status_code}")
-        
-        # Check response status
-        if response.status_code == 200:
-            response_data = response.json()
-            
-            # Log the full response for debugging
-            logger.debug(f"Full API response: {json.dumps(response_data, indent=2)}")
-            
-            # Check for image data in the response
-            if 'artifacts' in response_data and response_data['artifacts']:
-                # Find the first image artifact
-                for artifact in response_data['artifacts']:
-                    if artifact.get('type') == 'image' or artifact.get('type') is None:
-                        # Get the base64 image data
-                        image_data = artifact.get('base64')
-                        if image_data:
-                            try:
-                                # Decode and save the image
-                                with open(output_path, "wb") as f:
-                                    f.write(base64.b64decode(image_data))
-                                
-                                # Verify file was created
-                                if os.path.exists(output_path):
-                                    file_size = os.path.getsize(output_path)
-                                    logger.info(f"Successfully saved image to {output_path} (size: {file_size} bytes)")
-                                    print(f"✓ Image generated successfully: {os.path.basename(output_path)}")
-                                    return True
-                                else:
-                                    logger.error(f"Failed to save image to {output_path}")
-                                    print(f"✗ Failed to save generated image")
-                                    return False
-                            except Exception as e:
-                                logger.error(f"Error saving image: {str(e)}")
-                                print(f"✗ Error saving generated image: {e}")
-                                return False
-            
-            logger.warning("No valid image data found in response")
-            print(f"✗ Stability API failed to generate image")
-            
-            if allow_dalle_fallback:
-                logger.info("Attempting DALL-E fallback")
-                print("Attempting fallback to DALL-E...")
-                return generate_image_dalle(prompt, output_path, width, height)
-            else:
-                return False
-        else:
-            logger.warning(f"Invalid response from Stability API: {response.status_code} - {response.text}")
-            print(f"✗ Stability API returned error status code: {response.status_code}")
-            
-            if allow_dalle_fallback:
-                logger.info("Attempting DALL-E fallback")
-                print("Attempting fallback to DALL-E...")
-                return generate_image_dalle(prompt, output_path, width, height)
-            else:
-                return False
-                
-    except Exception as e:
-        logger.error(f"Error generating image with Stability API: {str(e)}")
-        logger.error(f"Error type: {type(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        print(f"✗ Error generating image: {e}")
-        
-        if allow_dalle_fallback:
-            logger.info("Attempting DALL-E fallback after error")
-            print("Attempting fallback to DALL-E...")
-            return generate_image_dalle(prompt, output_path, width, height)
-        else:
+
+        if response.status_code != 200:
+            logger.error(f"Stability API request failed with status code {response.status_code}")
+            logger.error(f"Response: {response.text}")
             return False
+
+        # Process the response and save the image
+        data = response.json()
+        if "artifacts" in data and len(data["artifacts"]) > 0:
+            image_data = base64.b64decode(data["artifacts"][0]["base64"])
+            with open(output_path, "wb") as f:
+                f.write(image_data)
+            logger.info(f"Successfully generated and saved image to {output_path}")
+            return True
+        else:
+            logger.error("No image data in Stability API response")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error generating image: {str(e)}")
+        return False
 
 def create_video_segment(segment, output_path, audio_file_path, style="modern"):
     """Create a video segment with visuals and audio"""
@@ -863,21 +818,39 @@ def test_video_generation(segment_paths, audio_file, output_path, temp_dir):
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
-def create_final_video(enhanced_segments, audio_path, output_path, temp_dir):
+def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, limit_to_one_minute=False):
     """Create the final video with synchronized audio."""
     try:
         logger.info("Starting final video creation")
         logger.info(f"Number of segments to process: {len(enhanced_segments)}")
         
-        # Calculate target duration based on segments
-        target_duration = max(segment["end"] for segment in enhanced_segments)
-        logger.info(f"Target duration based on segments: {target_duration:.2f} seconds")
+        # Calculate target duration based on segments and time limit
+        if limit_to_one_minute:
+            target_duration = min(max(segment["end"] for segment in enhanced_segments), TIME_LIMIT_SECONDS)
+            logger.info(f"Using time-limited duration: {target_duration:.2f} seconds")
+        else:
+            target_duration = max(segment["end"] for segment in enhanced_segments)
+            logger.info(f"Using full duration: {target_duration:.2f} seconds")
         
         # First, create video segments from PNG files
-        for i, segment in enumerate(enhanced_segments):
-            png_path = os.path.join(temp_dir, f"segment_{i+1}.png")
-            segment_path = os.path.join(temp_dir, f"segment_{i+1}.mp4")
-            segment_duration = segment["end"] - segment["start"]
+        valid_segments = []
+        for i, segment in enumerate(enhanced_segments, 1):
+            # Skip segments that start after the time limit if limit_to_one_minute is True
+            if limit_to_one_minute and segment["start"] >= TIME_LIMIT_SECONDS:
+                logger.info(f"Skipping segment {i} as it starts after time limit")
+                continue
+                
+            # Adjust end time if it exceeds the limit and limit_to_one_minute is True
+            end_time = min(segment["end"], TIME_LIMIT_SECONDS) if limit_to_one_minute else segment["end"]
+            segment_duration = end_time - segment["start"]
+            
+            # Skip segments with zero duration
+            if segment_duration <= 0:
+                logger.info(f"Skipping segment {i} as it has zero duration")
+                continue
+            
+            png_path = os.path.join(temp_dir, f"segment_{i}.png")
+            segment_path = os.path.join(temp_dir, f"segment_{i}.mp4")
             
             # Create video segment from PNG
             segment_cmd = [
@@ -894,38 +867,25 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir):
                 "-r", "24",
                 segment_path
             ]
-            logger.info(f"Creating video segment {i+1} with command: {' '.join(segment_cmd)}")
+            logger.info(f"Creating video segment {i} with command: {' '.join(segment_cmd)}")
             result = subprocess.run(segment_cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                raise ValueError(f"Error creating video segment {i+1}: {result.stderr}")
+                raise ValueError(f"Error creating video segment {i}: {result.stderr}")
+            
+            # Verify the segment was created
+            if os.path.exists(segment_path):
+                valid_segments.append((i, segment_path, segment_duration))
+                logger.info(f"Created segment {i} with duration {segment_duration:.2f}s")
+            else:
+                logger.error(f"Failed to create segment {i}")
+        
+        if not valid_segments:
+            raise ValueError("No valid segments were created")
         
         # Create concat file for ffmpeg
         concat_file = os.path.join(temp_dir, "concat.txt")
         with open(concat_file, "w") as f:
-            for i, segment in enumerate(enhanced_segments):
-                segment_path = os.path.join(temp_dir, f"segment_{i+1}.mp4")
-                logger.info(f"Processing segment {i+1}/{len(enhanced_segments)}")
-                
-                # Probe segment for codec info
-                probe_cmd = [
-                    "ffprobe",
-                    "-v", "error",
-                    "-select_streams", "v:0",
-                    "-show_entries", "stream=codec_name,codec_type,duration",
-                    "-of", "json",
-                    segment_path
-                ]
-                result = subprocess.run(probe_cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    raise ValueError(f"Error probing segment {i+1}: {result.stderr}")
-                
-                probe_data = json.loads(result.stdout)
-                logger.info(f"Segment {i+1} probe result: {probe_data}")
-                
-                # Get segment duration
-                segment_duration = float(probe_data["streams"][0]["duration"])
-                logger.info(f"Segment {i+1} duration: {segment_duration:.2f} seconds")
-                
+            for i, segment_path, duration in valid_segments:
                 # Write segment to concat file with absolute path
                 abs_segment_path = os.path.abspath(segment_path)
                 f.write(f"file '{abs_segment_path}'\n")
@@ -962,13 +922,30 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir):
         if result.returncode != 0:
             raise ValueError(f"Error creating looped video: {result.stderr}")
         
+        # Extract the limited audio if needed
+        temp_audio = os.path.join(temp_dir, "temp_audio.wav")
+        audio_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", audio_path,
+            "-t", str(target_duration),
+            "-acodec", "pcm_s16le",
+            "-ar", "44100",
+            "-ac", "2",
+            temp_audio
+        ]
+        logger.info(f"Extracting audio with command: {' '.join(audio_cmd)}")
+        result = subprocess.run(audio_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise ValueError(f"Error extracting audio: {result.stderr}")
+        
         # Finally, combine the looped video with the audio
         temp_output = os.path.join(temp_dir, "final_output.mp4")
         final_cmd = [
             "ffmpeg",
             "-y",
             "-i", looped_output,
-            "-i", audio_path,
+            "-i", temp_audio,
             "-map", "0:v",
             "-map", "1:a",
             "-c:v", "libx264",
@@ -1027,7 +1004,11 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir):
         shutil.move(temp_output, output_path)
         
         # Clean up temporary files
-        for temp_file in [concat_file, concat_output, looped_output] + [os.path.join(temp_dir, f"segment_{i+1}.mp4") for i in range(len(enhanced_segments))]:
+        temp_files = [concat_file, concat_output, looped_output, temp_audio]
+        for i, _, _ in valid_segments:
+            temp_files.append(os.path.join(temp_dir, f"segment_{i}.mp4"))
+        
+        for temp_file in temp_files:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         
@@ -1038,10 +1019,22 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir):
         logger.error(f"Error type: {type(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         # Clean up any temporary files
-        temp_files = [concat_file, concat_output, looped_output, temp_output] + [os.path.join(temp_dir, f"segment_{i+1}.mp4") for i in range(len(enhanced_segments))]
+        temp_files = [
+            os.path.join(temp_dir, "concat.txt"),
+            os.path.join(temp_dir, "concat_output.mp4"),
+            os.path.join(temp_dir, "looped_video.mp4"),
+            os.path.join(temp_dir, "temp_audio.wav"),
+            os.path.join(temp_dir, "final_output.mp4")
+        ]
+        for i in range(len(enhanced_segments)):
+            temp_files.append(os.path.join(temp_dir, f"segment_{i+1}.mp4"))
+        
         for temp_file in temp_files:
-            if 'temp_file' in locals() and os.path.exists(temp_file):
-                os.remove(temp_file)
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    logger.error(f"Error removing temporary file {temp_file}: {e}")
         return None
 
 def validate_audio_file(audio_path):
@@ -1081,24 +1074,19 @@ def validate_audio_file(audio_path):
         
         # Check if it's an MP3 file
         elif file_ext == '.mp3':
-            if not PYDUB_AVAILABLE:
-                raise ValueError("PyDub is required for MP3 files. Please install it with: pip install pydub")
-            
-            audio = AudioSegment.from_mp3(audio_path)
-            duration = len(audio) / 1000.0  # Convert milliseconds to seconds
+            # Use moviepy to get audio properties
+            audio = AudioFileClip(audio_path)
+            duration = audio.duration
             
             # Log audio properties
             logger.info(f"MP3 file properties:")
-            logger.info(f"- Channels: {audio.channels}")
-            logger.info(f"- Sample width: {audio.sample_width} bytes")
-            logger.info(f"- Frame rate: {audio.frame_rate} Hz")
             logger.info(f"- Duration: {duration:.2f} seconds")
+            
+            # Close the audio clip
+            audio.close()
             
             return {
                 'format': 'mp3',
-                'channels': audio.channels,
-                'sample_width': audio.sample_width,
-                'frame_rate': audio.frame_rate,
                 'duration': duration
             }
         
@@ -1118,29 +1106,7 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         
         if os.path.exists(transcript_path) and not force_transcription:
             logger.info(f"Using existing transcript: {transcript_path}")
-            
-            # If we're limiting to TIME_LIMIT_SECONDS, we need to verify the transcript respects this limit
-            if limit_to_one_minute:
-                # Read the transcript to check its duration
-                segments = []
-                with open(transcript_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if ' --> ' in line:
-                            start, end = line.split(' --> ')
-                            start_time = parse_timestamp(start)
-                            end_time = parse_timestamp(end)
-                            if start_time > TIME_LIMIT_SECONDS:
-                                logger.info(f"Existing transcript exceeds {TIME_LIMIT_SECONDS}-second limit, will regenerate")
-                                break
-                            segments.append((start_time, end_time))
-                
-                if segments and segments[-1][1] <= TIME_LIMIT_SECONDS:
-                    logger.info(f"Existing transcript is within {TIME_LIMIT_SECONDS}-second limit")
-                    return transcript_path
-                else:
-                    logger.info(f"Existing transcript exceeds {TIME_LIMIT_SECONDS}-second limit, will regenerate")
-                    force_transcription = True
+            return transcript_path
         
         # Create transcript directory if it doesn't exist
         os.makedirs(transcript_dir, exist_ok=True)
@@ -1156,38 +1122,57 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Initialize OpenAI client specifically for transcription
         transcription_client = OpenAI(api_key=openai_api_key)
         
-        # Load audio file with PyDub
-        audio = AudioSegment.from_file(audio_path)
-        original_duration = len(audio) / 1000.0  # Convert milliseconds to seconds
+        # Load audio file with moviepy to get duration
+        audio = AudioFileClip(audio_path)
+        original_duration = audio.duration
         logger.info(f"Original audio duration: {original_duration:.2f} seconds")
         
-        # If limit_to_one_minute is True, only process the first TIME_LIMIT_SECONDS
+        # Determine the duration to process
         if limit_to_one_minute:
-            logger.info(f"Limiting audio to first {TIME_LIMIT_SECONDS} seconds")
-            audio = audio[:TIME_LIMIT_MS]  # Take only first TIME_LIMIT_SECONDS milliseconds
-            duration = TIME_LIMIT_SECONDS  # Update duration to TIME_LIMIT_SECONDS
-            logger.info(f"Audio duration after limiting: {duration:.2f} seconds")
-            logger.info(f"Reduced duration by {original_duration - duration:.2f} seconds")
+            duration_to_process = min(original_duration, TIME_LIMIT_SECONDS)
+            logger.info(f"Limiting audio to first {duration_to_process:.2f} seconds")
+        else:
+            duration_to_process = original_duration
+            logger.info(f"Processing full audio duration: {duration_to_process:.2f} seconds")
         
         # Split audio into chunks for processing
-        chunk_duration = 300000  # 5 minutes in milliseconds
+        chunk_duration = 60  # 60 seconds per chunk
         chunks = []
         
-        for start_time in range(0, len(audio), chunk_duration):
-            end_time = min(start_time + chunk_duration, len(audio))
+        for start_time in range(0, int(duration_to_process), chunk_duration):
+            end_time = min(start_time + chunk_duration, duration_to_process)
             chunk_path = os.path.join(temp_dir, f"chunk_{start_time}_{end_time}.wav")
             
-            # Extract chunk
-            chunk = audio[start_time:end_time]
-            chunk.export(chunk_path, format="wav")
-            chunks.append(chunk_path)
-            
-            logger.info(f"Created chunk: {chunk_path}")
+            try:
+                # Use ffmpeg to extract chunk
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', audio_path,
+                    '-ss', str(start_time),
+                    '-t', str(end_time - start_time),
+                    '-acodec', 'pcm_s16le',
+                    '-ar', '44100',
+                    '-ac', '1',
+                    chunk_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    chunks.append((chunk_path, start_time))
+                    logger.info(f"Created chunk: {chunk_path} (start: {start_time}s, end: {end_time}s)")
+                else:
+                    logger.error(f"Error creating chunk {start_time}-{end_time}: {result.stderr}")
+            except Exception as e:
+                logger.error(f"Error processing chunk {start_time}-{end_time}: {str(e)}")
+                continue
+        
+        # Close the main audio clip
+        audio.close()
         
         # Process each chunk
         transcript_segments = []
-        for i, chunk_path in enumerate(chunks):
-            logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+        for i, (chunk_path, chunk_start) in enumerate(chunks):
+            logger.info(f"Processing chunk {i+1}/{len(chunks)} (start: {chunk_start}s)")
             
             # Transcribe chunk using OpenAI's Whisper model
             with open(chunk_path, "rb") as audio_file:
@@ -1198,15 +1183,15 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
                     timestamp_granularities=["segment"]
                 )
                 
-                # Add segments to transcript
+                # Add segments to transcript with adjusted timestamps
                 for segment in response.segments:
-                    # If we're limiting to TIME_LIMIT_SECONDS, only include segments within that time
-                    if limit_to_one_minute and segment.start > TIME_LIMIT_SECONDS:
-                        logger.debug(f"Skipping segment starting at {segment.start:.2f}s (beyond {TIME_LIMIT_SECONDS}s limit)")
-                        continue
+                    # Adjust timestamps by adding chunk start time
+                    adjusted_start = segment.start + chunk_start
+                    adjusted_end = segment.end + chunk_start
+                    
                     transcript_segments.append({
-                        "start": segment.start,
-                        "end": min(segment.end, TIME_LIMIT_SECONDS) if limit_to_one_minute else segment.end,
+                        "start": adjusted_start,
+                        "end": adjusted_end,
                         "text": segment.text
                     })
             
@@ -1230,11 +1215,6 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         
         logger.info(f"Transcription completed: {transcript_path}")
         logger.info(f"Total segments: {len(transcript_segments)}")
-        if limit_to_one_minute:
-            logger.info(f"Transcription limited to first {TIME_LIMIT_SECONDS} seconds")
-            if transcript_segments:
-                logger.info(f"First segment starts at: {transcript_segments[0]['start']:.2f}s")
-                logger.info(f"Last segment ends at: {transcript_segments[-1]['end']:.2f}s")
         return transcript_path
         
     except Exception as e:
@@ -1252,7 +1232,7 @@ def format_timestamp(seconds):
     seconds = int(seconds)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
-def extract_segments(transcript_path, limit_to_one_minute=False):
+def extract_segments(transcript_path):
     """Extract segments from SRT transcript file"""
     try:
         segments = []
@@ -1324,11 +1304,12 @@ def parse_timestamp(timestamp):
         logger.error(f"Error parsing timestamp {timestamp}: {str(e)}")
         return 0
 
-def enhance_segments(segments):
+def enhance_segments(segments, limit_to_one_minute=False):
     """Enhance segments with AI descriptions and visual prompts"""
     try:
         enhanced_segments = []
         total_segments = len(segments)
+        time_limit = TIME_LIMIT_SECONDS if limit_to_one_minute else float('inf')
         
         for i, segment in enumerate(segments, 1):
             # Check for cancellation
@@ -1336,13 +1317,23 @@ def enhance_segments(segments):
                 logger.info("Enhancement cancelled by user")
                 return None
             
-            # Log progress
-            logger.info(f"Enhancing segment {i}/{total_segments}")
-            
             # Get segment text and timestamps
             text = segment['text']
             start_time = parse_timestamp(segment['timestamp']['start'])
             end_time = parse_timestamp(segment['timestamp']['end'])
+            
+            # Skip segments that start after the time limit
+            if start_time >= time_limit:
+                logger.info(f"Skipping segment {i}/{total_segments} (start: {start_time:.2f}s) - exceeds time limit")
+                continue
+                
+            # Adjust end time if it exceeds the time limit
+            if end_time > time_limit:
+                end_time = time_limit
+                logger.info(f"Adjusting end time of segment {i}/{total_segments} to {time_limit:.2f}s")
+            
+            # Log progress
+            logger.info(f"Enhancing segment {i}/{total_segments} (start: {start_time:.2f}s, end: {end_time:.2f}s)")
             
             # Create prompt for AI enhancement
             prompt = f"""You are a helpful assistant that analyzes podcast segments and provides structured descriptions and visual prompts.
@@ -1426,366 +1417,148 @@ Important: Your response must be valid JSON. Do not include any text before or a
                 
             except Exception as e:
                 logger.error(f"Error enhancing segment {i}: {str(e)}")
-                logger.error(f"Error type: {type(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                # Create a fallback enhancement for this segment
-                enhanced_segment = {
-                    'start': start_time,
-                    'end': end_time,
-                    'text': text,
-                    'description': f"Segment {i}: {text[:100]}...",
-                    'visual_prompt': f"An image representing: {text[:100]}...",
-                    'key_points': [text[:100]]
-                }
-                enhanced_segments.append(enhanced_segment)
                 continue
         
-        logger.info(f"Completed enhancement of {len(enhanced_segments)} segments")
+        # Sort segments by start time to ensure they're sequential
+        enhanced_segments.sort(key=lambda x: x['start'])
+        
+        # Log final segment count
+        logger.info(f"Successfully enhanced {len(enhanced_segments)} segments")
         return enhanced_segments
         
     except Exception as e:
         logger.error(f"Error in enhance_segments: {str(e)}")
         logger.error(f"Error type: {type(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return None
+        return []
 
-def generate_visuals(enhanced_segments, temp_dir, allow_dalle_fallback=False, non_interactive=False):
+def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
     """Generate visuals for each enhanced segment"""
-    try:
-        segments_with_visuals = []
-        total_segments = len(enhanced_segments)
-        
-        for i, segment in enumerate(enhanced_segments, 1):
-            # Check for cancellation
-            if is_cancelling:
-                logger.info("Visual generation cancelled by user")
-                return None
-            
-            # Log progress
-            logger.info(f"Generating visuals for segment {i}/{total_segments}")
-            
-            # Create output path for image
-            image_path = os.path.join(temp_dir, f"segment_{i}.png")
-            
-            # Generate image using Stability API with DALL-E fallback
+    logger.info("Generating visuals for segments")
+    visuals = []
+    
+    for i, segment in enumerate(enhanced_segments, 1):
+        logger.info(f"Generating visuals for segment {i}/{len(enhanced_segments)}")
+        try:
+            # Generate image for the segment
+            image_path = os.path.join(output_dir, f"segment_{i}.png")
             success = generate_image_stability(
-                segment['visual_prompt'],
-                image_path,
-                width=1024,
-                height=1024,
-                allow_dalle_fallback=allow_dalle_fallback,
+                prompt=segment['visual_prompt'],
+                output_path=image_path,
                 non_interactive=non_interactive
             )
             
             if success:
-                # Add image path to segment
-                segment['visuals'] = {
-                    'main_image': image_path
-                }
-                segments_with_visuals.append(segment)
-                logger.info(f"Generated visuals for segment {i}/{total_segments}")
+                visuals.append({
+                    'text': segment['text'],
+                    'image_path': image_path,
+                    'start_time': segment['start'],
+                    'end_time': segment['end']
+                })
+                logger.info(f"Generated visual for segment {i}")
             else:
-                logger.error(f"Failed to generate visuals for segment {i}")
-                # Continue with next segment
-                continue
+                logger.error(f"Failed to generate visual for segment {i}")
+                
+        except Exception as e:
+            logger.error(f"Error in generate_visuals: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error("Visual generation failed")
+            return None
+            
+    logger.info(f"Generated {len(visuals)} visuals")
+    return visuals
+
+def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_interactive=False):
+    """Process an audio file to create a video with AI-generated visuals."""
+    try:
+        # Create temp directory
+        temp_dir = "temp"
+        os.makedirs(temp_dir, exist_ok=True)
         
-        logger.info(f"Completed visual generation for {len(segments_with_visuals)} segments")
-        return segments_with_visuals
+        # Create transcripts directory
+        transcript_dir = "transcripts"
+        os.makedirs(transcript_dir, exist_ok=True)
+        
+        # Log whether we're using time limit
+        if limit_to_one_minute:
+            logger.info(f"Processing with time limit of {TIME_LIMIT_SECONDS} seconds")
+        else:
+            logger.info("Processing full audio file without time limit")
+        
+        # Step 1: Transcribe audio
+        logger.info("Starting audio transcription")
+        transcript_path = transcribe_audio(
+            audio_path,
+            force_transcription=False,
+            transcript_dir=transcript_dir,
+            non_interactive=non_interactive,
+            temp_dir=temp_dir,
+            limit_to_one_minute=limit_to_one_minute
+        )
+        
+        if transcript_path is None:
+            logger.error("Transcription failed")
+            return None
+        
+        logger.info(f"Transcription completed: {transcript_path}")
+        
+        # Step 2: Extract segments from transcript
+        logger.info("Extracting segments from transcript")
+        segments = extract_segments(transcript_path)
+        
+        if not segments:
+            logger.error("No segments extracted from transcript")
+            return None
+        
+        logger.info(f"Extracted {len(segments)} segments")
+        
+        # Step 3: Enhance segments with AI
+        logger.info("Enhancing segments with AI")
+        enhanced_segments = enhance_segments(segments, limit_to_one_minute)
+        
+        if not enhanced_segments:
+            logger.error("Segment enhancement failed")
+            return None
+        
+        logger.info(f"Enhanced {len(enhanced_segments)} segments")
+        
+        # Step 4: Generate visuals for segments
+        logger.info("Generating visuals for segments")
+        success = generate_visuals(
+            enhanced_segments,
+            temp_dir,
+            non_interactive=non_interactive
+        )
+        
+        if not success:
+            logger.error("Visual generation failed")
+            return None
+        
+        logger.info("Visual generation completed")
+        
+        # Step 5: Create final video
+        logger.info("Creating final video")
+        final_video_path = create_final_video(
+            enhanced_segments,
+            audio_path,
+            output_path,
+            temp_dir,
+            limit_to_one_minute=limit_to_one_minute
+        )
+        
+        if final_video_path is None:
+            logger.error("Final video creation failed")
+            return None
+        
+        logger.info(f"Final video created: {final_video_path}")
+        return final_video_path
         
     except Exception as e:
-        logger.error(f"Error in generate_visuals: {str(e)}")
+        logger.error(f"Error processing audio file: {str(e)}")
         logger.error(f"Error type: {type(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 if __name__ == "__main__":
-    parser = main()
-    args = parser.parse_args()
-    start_time = time.time()
-    
-    # Start progress monitoring
-    progress_thread = start_progress_monitoring(interval=5)
-    
-    try:
-        debug_point("Starting podcast-to-video conversion")
-        logger.info(f"Command line arguments: {args}")
-        
-        # Create temp and transcript directories
-        debug_point(f"Creating directories: {args.temp_dir}, {args.transcript_dir}")
-        os.makedirs(args.temp_dir, exist_ok=True)
-        os.makedirs(args.transcript_dir, exist_ok=True)
-        
-        # If test_video is specified, only test video generation
-        if args.test_video:
-            debug_point("Testing video generation")
-            print("Testing video generation with existing segments...")
-            
-            # Find all segment files in temp directory
-            segment_paths = []
-            for file in os.listdir(args.temp_dir):
-                if file.startswith("segment_") and file.endswith(".mp4"):
-                    segment_paths.append(os.path.join(args.temp_dir, file))
-            
-            if not segment_paths:
-                logger.warning("No segment files found in temp directory")
-                print("No segment files found. Creating test segment...")
-            
-            # Test video generation
-            output_path = test_video_generation(
-                segment_paths,
-                args.audio,
-                args.output,
-                args.temp_dir
-            )
-            
-            if output_path is None:
-                logger.error("Video generation test failed")
-                exit(1)
-            
-            print(f"\nVideo generation test completed successfully!")
-            print(f"Output file: {output_path}")
-            exit(0)
-        
-        # Check for required API keys and warn user
-        debug_point("Checking API keys")
-        openai_key_available = bool(os.environ.get("OPENAI_API_KEY"))
-        deepseek_key_available = bool(os.environ.get("DEEPSEEK_API_KEY"))
-        stability_key_available = bool(os.environ.get("STABILITY_API_KEY"))
-        
-        if not openai_key_available and not deepseek_key_available:
-            logger.error("No API keys found - both OPENAI_API_KEY and DEEPSEEK_API_KEY are missing.")
-            logger.error("At least one API key is required for transcription and content enhancement.")
-            if not args.non_interactive and not get_user_confirmation("Continue without any API keys?", default=False):
-                logger.info("Exiting due to missing API keys")
-                exit(1)
-        elif not openai_key_available and deepseek_key_available:
-            # Only log DeepSeek preference if it was successfully tested
-            if api_type == "deepseek":
-                logger.info("OPENAI_API_KEY not found, but DEEPSEEK_API_KEY is available.")
-                logger.info("Will use DeepSeek API for transcription and content enhancement.")
-                if not args.non_interactive and not get_user_confirmation("Continue using DeepSeek API?", default=True):
-                    logger.info("Exiting as user chose not to use DeepSeek API")
-                    exit(1)
-            else:
-                logger.warning("DeepSeek API key provided but API test failed.")
-                if not args.non_interactive and not get_user_confirmation("Continue with potentially non-working APIs?", default=False):
-                    logger.info("Exiting due to failed API tests")
-                    exit(1)
-        elif api_type == "openai":
-            logger.info("Using OpenAI API for all operations.")
-        
-        # Initialize Stability API for images
-        try:
-            debug_point("Initializing Stability API client")
-            stability_api_key = os.environ.get("STABILITY_API_KEY")
-            if stability_api_key:
-                try:
-                    # Initialize the Stability API client with REST API
-                    stability_api = requests.Session()
-                    stability_api.headers.update({
-                        "Authorization": f"Bearer {stability_api_key}",
-                        "Content-Type": "application/json"
-                    })
-                    logger.info("Stability API initialized successfully")
-                    
-                    # Quick test of Stability API
-                    try:
-                        debug_point("Testing Stability API connection")
-                        # Make a minimal request to test connectivity
-                        test_response = stability_api.post(
-                            "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
-                            json={
-                                "text_prompts": [{"text": "test"}],
-                                "width": 1024,  # Use standard 1024x1024 dimensions
-                                "height": 1024,
-                                "steps": 30,
-                                "samples": 1,
-                                "cfg_scale": 8.0,
-                                "style_preset": "photographic"  # Use a valid style preset
-                            }
-                        )
-                        
-                        # Check response status
-                        if test_response.status_code == 200:
-                            response_data = test_response.json()
-                            if 'artifacts' in response_data and response_data['artifacts']:
-                                logger.info("Stability API test successful")
-                            else:
-                                raise ValueError("Stability API test failed: No image artifacts in response")
-                        else:
-                            raise ValueError(f"Stability API test failed with status code {test_response.status_code}: {test_response.text}")
-                            
-                    except Exception as e:
-                        logger.error(f"Stability API test failed: {e}")
-                        logger.error(f"Error type: {type(e)}")
-                        logger.error(f"Traceback: {traceback.format_exc()}")
-                        stability_api = None  # Reset the API client if test fails
-                        
-                        # Exit the program if Stability API fails and DALL-E fallback is not allowed
-                        if not args.allow_dalle_fallback:
-                            logger.error("Stability API test failed and DALL-E fallback is not allowed.")
-                            logger.error("Please check your Stability API key and configuration.")
-                            logger.error("Or run with --allow_dalle_fallback to use DALL-E as a fallback.")
-                            sys.exit(1)
-                        else:
-                            logger.warning("Stability API test failed, will use DALL-E as fallback")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Stability API: {e}", exc_info=True)
-                    stability_api = None
-            else:
-                stability_api = None
-                logger.warning("No Stability API key found. Will attempt to use alternatives.")
-        except Exception as e:
-            logger.error(f"Error in Stability API initialization block: {e}", exc_info=True)
-            stability_api = None
-        
-        # Check for image generation capabilities
-        if not stability_key_available and not openai_key_available:
-            logger.error("No image generation API keys available (neither STABILITY_API_KEY nor OPENAI_API_KEY)")
-            logger.error("Please provide at least one API key for image generation")
-            exit(1)
-        elif not stability_key_available and not args.allow_dalle_fallback:
-            logger.warning("STABILITY_API_KEY not found and DALL-E fallback not allowed.")
-            logger.warning("Please provide a Stability API key or run with --allow_dalle_fallback")
-            if not args.non_interactive and not get_user_confirmation("Continue using DALL-E for image generation?", default=False):
-                logger.info("Exiting due to missing Stability API key")
-                exit(1)
-        
-        # Check for the input audio file
-        debug_point(f"Checking input file: {args.audio}")
-        if not os.path.exists(args.audio):
-            logger.error(f"Input audio file not found: {args.audio}")
-            exit(1)
-        
-        # Validate the audio file format
-        try:
-            debug_point("Validating audio file format")
-            audio_info = validate_audio_file(args.audio)
-            logger.info("Audio file validation successful")
-        except ValueError as e:
-            logger.error(f"Audio validation error: {e}")
-            exit(1)
-            
-        logger.info("Completed initialization and validation")
-        
-        # Proceed with transcription and conversion
-        try:
-            # Transcribe audio with timeout protection
-            debug_point("Starting audio transcription")
-            print("Transcribing audio. This may take several minutes...")
-            transcript, error = with_timeout(
-                transcribe_audio,
-                args=(
-                    args.audio, 
-                    args.force_transcription,
-                    args.transcript_dir,
-                    args.non_interactive,
-                    args.temp_dir,
-                    args.limit_to_one_minute
-                ),
-                timeout_seconds=600,  # 10 minute timeout for transcription
-                description="Audio transcription"
-            )
-            
-            if error:
-                logger.error(f"Transcription error or timeout: {error}")
-                exit(1)
-                
-            if transcript is None:
-                logger.error("Transcription failed or was cancelled")
-                exit(1)
-                
-            # Extract meaningful segments
-            debug_point("Extracting segments from transcript")
-            segments = extract_segments(transcript, args.limit_to_one_minute)
-            logger.info(f"Extracted {len(segments)} segments")
-            
-            # Enhance segments with AI (with timeout protection)
-            debug_point("Enhancing segments with AI descriptions")
-            print("Enhancing segments with AI. This may take several minutes...")
-            enhanced_segments, error = with_timeout(
-                enhance_segments,
-                args=(segments,),
-                timeout_seconds=1200,  # 15 minute timeout
-                description="Segment enhancement"
-            )
-            
-            if error:
-                logger.error(f"Segment enhancement error or timeout: {error}")
-                exit(1)
-                
-            if enhanced_segments is None:
-                logger.error("Segment enhancement failed or was cancelled")
-                exit(1)
-            
-            # Generate visuals for each segment (with timeout protection)
-            debug_point("Generating visuals for each segment")
-            print("Generating visuals. This may take several minutes...")
-            enhanced_segments_with_visuals, error = with_timeout(
-                generate_visuals,
-                args=(
-                    enhanced_segments, 
-                    args.temp_dir,
-                    args.allow_dalle_fallback,
-                    args.non_interactive
-                ),
-                timeout_seconds=1200,  # 15 minute timeout
-                description="Visual generation"
-            )
-            
-            if error:
-                logger.error(f"Visual generation error or timeout: {error}")
-                exit(1)
-                
-            if enhanced_segments_with_visuals is None:
-                logger.error("Visual generation failed or was cancelled")
-                exit(1)
-            
-            # Create final video (with timeout protection)
-            debug_point("Creating final video")
-            print("Creating final video. This may take several minutes...")
-            output_path, error = with_timeout(
-                create_final_video,
-                args=(
-                    enhanced_segments_with_visuals,
-                    args.audio,
-                    args.output,
-                    args.temp_dir
-                ),
-                timeout_seconds=900,  # 15 minute timeout
-                description="Video creation"
-            )
-            
-            if error:
-                logger.error(f"Video creation error or timeout: {error}")
-                exit(1)
-                
-            if output_path is None:
-                logger.error("Video creation failed or was cancelled")
-                exit(1)
-            
-            total_time = time.time() - start_time
-            logger.info(f"Video creation complete: {args.output} in {total_time:.1f} seconds")
-            
-            # Add a more prominent final success message
-            print("\n")
-            print("🎉 " + "=" * 30 + " PROCESS COMPLETED SUCCESSFULLY " + "=" * 30 + " 🎉")
-            print("\n")
-            print(f"⏱️  \033[1mTotal processing time:\033[0m \033[1;32m{total_time/60:.1f} minutes\033[0m")
-            print(f"🔄 \033[1mAll operations completed with no errors\033[0m")
-            print("\n")
-            print("To play your video:")
-            print(f"  \033[1;36mopen \"{os.path.abspath(args.output)}\"\033[0m")
-            print("\n" + "=" * 80 + "\n")
-            
-        except Exception as e:
-            logger.error(f"Error during processing: {e}", exc_info=True)
-            exit(1)
-        
-    except KeyboardInterrupt:
-        # This catch is for any cancellations that happen outside of the functions
-        logger.info("\nOperation cancelled by user.")
-        exit(0)
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        exit(1)
+    main()
