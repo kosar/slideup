@@ -160,13 +160,14 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
                 processing_tasks[task_id] = {'status': 'generating_visuals', 'progress': 60, 'message': 'Generating visuals...'}
             elif "Starting final video creation" in line:
                 processing_tasks[task_id] = {'status': 'creating_video', 'progress': 80, 'message': 'Creating final video...'}
-            elif "Video creation completed" in line or "Processing complete" in line:
+            elif "Final video created:" in line or "Video creation completed" in line or "Processing complete" in line or "Processing completed for task" in line:
                 processing_tasks[task_id] = {
                     'status': 'completed', 
                     'progress': 100, 
                     'message': 'Processing complete!',
-                    'output_file': os.path.basename(output_file)
+                    'output_file': f"{task_id}_output.mp4"
                 }
+                logger.info(f"Processing completed for task {task_id}")
         
         # Check if there was an error
         result.wait()
@@ -248,50 +249,71 @@ def reset_prompts():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     """Handle file upload and start processing"""
+    logger.info("Upload request received")
+    logger.info(f"Request files: {request.files}")
+    logger.info(f"Request form data: {request.form}")
+    
     if 'file' not in request.files:
+        logger.error("No file part in the request")
         flash('No file part', 'error')
         return redirect(url_for('index'))
         
     file = request.files['file']
+    logger.info(f"File received: {file.filename}")
     
     if file.filename == '':
+        logger.error("No file selected")
         flash('No file selected', 'error')
         return redirect(url_for('index'))
         
     if file and allowed_file(file.filename):
         # Create unique task ID
         task_id = str(uuid.uuid4())
+        logger.info(f"Created task ID: {task_id}")
         
-        # Save the file
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{task_id}_{filename}")
-        file.save(file_path)
-        
-        # Get processing options
-        limit_to_one_minute = 'limit_to_one_minute' in request.form
-        non_interactive = True  # Always non-interactive for web app
-        
-        # Get custom prompts if provided
-        prompts = session.get('prompts', DEFAULT_PROMPTS)
-        enhance_prompt = prompts.get('enhance_segments', DEFAULT_PROMPTS['enhance_segments'])
-        visual_prompt = prompts.get('visual_generation', DEFAULT_PROMPTS['visual_generation'])
-        
-        # Set up output path
-        os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
-        output_file = os.path.join(app.config['OUTPUT_FOLDER'], f"{task_id}_output.mp4")
-        
-        # Start processing in background
-        processing_thread = threading.Thread(
-            target=process_audio_file_background,
-            args=(task_id, file_path, output_file, limit_to_one_minute, non_interactive, enhance_prompt, visual_prompt)
-        )
-        processing_thread.daemon = True
-        processing_thread.start()
-        
-        # Redirect to status page
-        return redirect(url_for('status', task_id=task_id))
+        try:
+            # Save the file
+            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{task_id}_{filename}")
+            logger.info(f"Saving file to: {file_path}")
+            file.save(file_path)
+            logger.info(f"File saved successfully. Size: {os.path.getsize(file_path)} bytes")
+            
+            # Get processing options
+            limit_to_one_minute = 'limit_to_one_minute' in request.form
+            non_interactive = True  # Always non-interactive for web app
+            
+            # Get custom prompts if provided
+            prompts = session.get('prompts', DEFAULT_PROMPTS)
+            enhance_prompt = prompts.get('enhance_segments', DEFAULT_PROMPTS['enhance_segments'])
+            visual_prompt = prompts.get('visual_generation', DEFAULT_PROMPTS['visual_generation'])
+            
+            # Set up output path
+            os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+            output_file = os.path.join(app.config['OUTPUT_FOLDER'], f"{task_id}_output.mp4")
+            
+            # Start processing in background
+            logger.info("Starting background processing")
+            processing_thread = threading.Thread(
+                target=process_audio_file_background,
+                args=(task_id, file_path, output_file, limit_to_one_minute, non_interactive, enhance_prompt, visual_prompt)
+            )
+            processing_thread.daemon = True
+            processing_thread.start()
+            logger.info("Background processing thread started")
+            
+            # Redirect to status page
+            return redirect(url_for('status', task_id=task_id))
+            
+        except Exception as e:
+            logger.error(f"Error during file upload processing: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Traceback: {sys.exc_info()}")
+            flash(f'Error processing upload: {str(e)}', 'error')
+            return redirect(url_for('index'))
     
+    logger.error(f"Invalid file type: {file.filename}")
     flash('Invalid file type. Please upload an MP3 or WAV file.', 'error')
     return redirect(url_for('index'))
 

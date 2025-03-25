@@ -186,3 +186,7 @@ podcast2video/*.vtt
 podcast2video/cache
 podcast2video/enhanced_podcast.mp4
 podcast-to-video.py
+podcast2video/webapp/temp/
+podcast2video/webapp/uploads/
+podcast2video/webapp/transcripts/
+podcast2video/webapp/outputs/

@@ -86,6 +86,8 @@
             fetch(statusUrl)
                 .then(response => response.json())
                 .then(data => {
+                    console.log('Status update:', data);  // Add logging
+                    
                     // Update progress bar
                     const progressBar = document.getElementById('progress-bar');
                     progressBar.style.width = data.progress + '%';
@@ -100,6 +102,8 @@
                     if (data.status === 'completed') {
                         document.getElementById('download-section').classList.remove('d-none');
                         clearInterval(pollInterval);
+                        // Force page refresh to ensure download link is properly set up
+                        window.location.reload();
                     } else if (data.status === 'failed') {
                         document.getElementById('error-section').classList.remove('d-none');
                         document.getElementById('error-message').textContent = data.message;
@@ -116,8 +120,8 @@
             // Initial check of status
             updateStatus();
             
-            // Set up polling every 2 seconds
-            pollInterval = setInterval(updateStatus, 2000);
+            // Set up polling every 1 second (changed from 2 seconds)
+            pollInterval = setInterval(updateStatus, 1000);
             
             // Stop polling after 30 minutes (prevents runaway polling)
             setTimeout(() => {

@@ -24,7 +24,7 @@ import shutil
 from datetime import datetime
 import numpy as np
 
-# Set up logging
+# Set up logging first
 logging.basicConfig(
     level=logging.INFO,  # Changed from DEBUG to INFO
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -34,6 +34,18 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('podcast2video')
+
+# Initialize MoviePy
+moviepy_editor = None
+MOVIEPY_AVAILABLE = False
+
+try:
+    import moviepy.editor as moviepy_editor
+    MOVIEPY_AVAILABLE = True
+    logger.info("Successfully imported MoviePy")
+except ImportError as e:
+    logger.error(f"MoviePy import error: {e}")
+    MOVIEPY_AVAILABLE = False
 
 # Global configuration
 TIME_LIMIT_SECONDS = 60  # 6 minutes
@@ -55,10 +67,6 @@ task_name = None  # Track current task name
 task_stack = []  # Stack to track nested operations
 min_task_duration = 0.5  # Increased minimum duration to log (in seconds)
 
-# Initialize optional dependencies as None
-moviepy_editor = None
-MOVIEPY_AVAILABLE = False
-
 # Import optional modules
 try:
     from openai import OpenAI
@@ -76,15 +84,18 @@ except ImportError:
     STABILITY_AVAILABLE = False
 
 def init_moviepy():
-    """Initialize MoviePy when needed"""
+    """Initialize MoviePy and return whether it's available"""
     global moviepy_editor, MOVIEPY_AVAILABLE
-    if moviepy_editor is None:
+    if not MOVIEPY_AVAILABLE:
         try:
             import moviepy.editor as moviepy_editor
             MOVIEPY_AVAILABLE = True
-            logger.info("Successfully imported MoviePy")
+            logger.info("Successfully initialized MoviePy")
         except ImportError as e:
-            logger.error(f"MoviePy import error: {e}")
+            logger.error(f"Failed to initialize MoviePy: {e}")
+            MOVIEPY_AVAILABLE = False
+        except Exception as e:
+            logger.error(f"Unexpected error initializing MoviePy: {e}")
             MOVIEPY_AVAILABLE = False
     return MOVIEPY_AVAILABLE
 
@@ -1210,10 +1221,18 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Initialize OpenAI client specifically for transcription
         transcription_client = OpenAI(api_key=openai_api_key)
         
+        # Initialize MoviePy
+        if not init_moviepy():
+            raise ImportError("Failed to initialize MoviePy")
+        
         # Load audio file with moviepy to get duration
-        audio = moviepy_editor.AudioFileClip(audio_path)
-        original_duration = audio.duration
-        logger.info(f"Original audio duration: {original_duration:.2f} seconds")
+        try:
+            audio = moviepy_editor.AudioFileClip(audio_path)
+            original_duration = audio.duration
+            logger.info(f"Original audio duration: {original_duration:.2f} seconds")
+        except Exception as e:
+            logger.error(f"Error loading audio file with MoviePy: {str(e)}")
+            raise
         
         # Determine the duration to process
         if limit_to_one_minute:
