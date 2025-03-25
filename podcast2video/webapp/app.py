@@ -8,6 +8,8 @@ import subprocess
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 import threading
+from datetime import datetime
+import traceback
 
 # Add the parent directory to sys.path - needed for finding the podcast-to-video.py script
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,6 +79,28 @@ Include details like style, composition, colors, and elements to include in the 
 # Background processes tracking
 processing_tasks = {}
 
+# Add datetime filter for templates
+@app.template_filter('datetime')
+def format_datetime(value):
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, (int, float)):
+            # Handle timestamp
+            return datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M:%S')
+        if isinstance(value, str):
+            # Try to parse ISO format string
+            return datetime.fromisoformat(value).strftime('%Y-%m-%d %H:%M:%S')
+        if isinstance(value, datetime):
+            return value.strftime('%Y-%m-%d %H:%M:%S')
+        # Try to convert to float if it's a string representation of a number
+        if isinstance(value, str) and value.replace('.', '').isdigit():
+            return datetime.fromtimestamp(float(value)).strftime('%Y-%m-%d %H:%M:%S')
+        return str(value)
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Error formatting datetime value '{value}': {str(e)}")
+        return str(value)
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
@@ -90,7 +114,15 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
                                 enhance_prompt=None, visual_prompt=None):
     """Background processing of the audio file"""
     try:
-        processing_tasks[task_id] = {'status': 'starting', 'progress': 0, 'message': 'Initializing processing'}
+        # Initialize task status
+        processing_tasks[task_id] = {
+            'status': 'starting',
+            'progress': 0,
+            'message': 'Initializing processing',
+            'logs': [],
+            'start_time': time.time(),
+            'output_file': None
+        }
         
         # Set up directory paths
         webapp_dir = os.path.dirname(os.path.abspath(__file__))
@@ -98,10 +130,13 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
         os.makedirs(temp_dir, exist_ok=True)
         
         # Update status
-        processing_tasks[task_id] = {'status': 'processing', 'progress': 10, 'message': 'Processing audio...'}
+        processing_tasks[task_id].update({
+            'status': 'processing',
+            'progress': 10,
+            'message': 'Processing audio...'
+        })
         
-        # Call the podcast-to-video.py script directly instead of using the imported functions
-        # This avoids the MoviePy import errors
+        # Call the podcast-to-video.py script directly
         logger.info(f"Starting processing task {task_id} using subprocess")
         
         # Build command with all necessary arguments
@@ -116,87 +151,79 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
         
         if limit_to_one_minute:
             cmd.append("--limit_to_one_minute")
-            
-        # Note about custom prompts:
-        # Custom prompts are stored in the session but cannot be directly passed to the command line
-        # as the script doesn't support this. In a real implementation, you would need to modify
-        # the original script to accept these parameters or use environment variables.
-        if enhance_prompt or visual_prompt:
-            logger.warning("Custom prompts are stored but cannot be passed to the script - " +
-                          "the script doesn't support command line arguments for prompts")
-            
-        # Run the command
-        logger.info(f"Running processing command: {' '.join(cmd)}")
         
-        result = subprocess.Popen(
-            cmd, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            text=True, 
-            bufsize=1, 
+        # Start the subprocess with pipe for output
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             universal_newlines=True,
-            env=os.environ  # Pass current environment including API keys
+            bufsize=1
         )
         
-        # Start a separate thread to monitor stderr
-        def monitor_stderr():
-            for line in iter(result.stderr.readline, ''):
-                logger.error(line.strip())
+        # Read output in real-time
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                output = output.strip()
+                logger.info(f"Process output: {output}")
+                
+                # Update status based on output
+                if "Starting audio transcription" in output:
+                    processing_tasks[task_id].update({
+                        'progress': 20,
+                        'message': 'Transcribing audio...'
+                    })
+                elif "Transcription completed" in output:
+                    processing_tasks[task_id].update({
+                        'progress': 40,
+                        'message': 'Enhancing segments...'
+                    })
+                elif "Enhanced" in output and "segments" in output:
+                    processing_tasks[task_id].update({
+                        'progress': 60,
+                        'message': 'Generating visuals...'
+                    })
+                elif "Generated" in output and "visuals" in output:
+                    processing_tasks[task_id].update({
+                        'progress': 80,
+                        'message': 'Creating final video...'
+                    })
+                
+                # Add to logs
+                processing_tasks[task_id]['logs'].append(output)
         
-        stderr_thread = threading.Thread(target=monitor_stderr)
-        stderr_thread.daemon = True
-        stderr_thread.start()
+        # Get the return code
+        return_code = process.poll()
         
-        # Monitor progress based on log output
-        for line in iter(result.stdout.readline, ''):
-            logger.info(line.strip())
+        if return_code == 0:
+            # Check if output file exists
+            if os.path.exists(output_file):
+                processing_tasks[task_id].update({
+                    'status': 'completed',
+                    'progress': 100,
+                    'message': 'Processing completed successfully',
+                    'output_file': os.path.basename(output_file),
+                    'end_time': time.time()
+                })
+            else:
+                raise FileNotFoundError(f"Output file not found at {output_file}")
+        else:
+            # Get error output
+            error_output = process.stderr.read()
+            raise Exception(f"Process failed with return code {return_code}: {error_output}")
             
-            # Update progress based on log lines
-            if "Starting transcription" in line:
-                processing_tasks[task_id] = {'status': 'transcribing', 'progress': 20, 'message': 'Transcribing audio...'}
-            elif "Enhancing segment" in line:
-                processing_tasks[task_id] = {'status': 'enhancing', 'progress': 40, 'message': 'Enhancing segments with AI...'}
-            elif "Generating visuals" in line:
-                processing_tasks[task_id] = {'status': 'generating_visuals', 'progress': 60, 'message': 'Generating visuals...'}
-            elif "Starting final video creation" in line:
-                processing_tasks[task_id] = {'status': 'creating_video', 'progress': 80, 'message': 'Creating final video...'}
-            elif "Final video created:" in line or "Video creation completed" in line or "Processing complete" in line or "Processing completed for task" in line:
-                processing_tasks[task_id] = {
-                    'status': 'completed', 
-                    'progress': 100, 
-                    'message': 'Processing complete!',
-                    'output_file': f"{task_id}_output.mp4"
-                }
-                logger.info(f"Processing completed for task {task_id}")
-        
-        # Check if there was an error
-        result.wait()
-        if result.returncode != 0:
-            # Read any remaining stderr
-            error_output = result.stderr.read()
-            logger.error(f"Processing failed with return code {result.returncode}: {error_output}")
-            processing_tasks[task_id] = {'status': 'failed', 'progress': 0, 'message': f'Error: Processing failed with code {result.returncode}'}
-            return
-        
-        # All done!
-        if 'status' not in processing_tasks[task_id] or processing_tasks[task_id]['status'] != 'completed':
-            processing_tasks[task_id] = {
-                'status': 'completed', 
-                'progress': 100, 
-                'message': 'Processing complete!',
-                'output_file': os.path.basename(output_file)
-            }
-            logger.info(f"Processing completed for task {task_id}")
-        
     except Exception as e:
-        logger.error(f"Error in process_audio_file_background: {str(e)}")
-        logger.error(f"Error type: {type(e)}")
-        logger.error(f"Traceback: {sys.exc_info()}")
-        processing_tasks[task_id] = {
-            'status': 'failed', 
-            'progress': 0, 
-            'message': f'Error: {str(e)}'
-        }
+        logger.error(f"Error in background processing: {str(e)}")
+        processing_tasks[task_id].update({
+            'status': 'failed',
+            'progress': 0,
+            'message': f'Processing failed: {str(e)}',
+            'end_time': time.time()
+        })
+        raise
 
 @app.route('/')
 def index():
@@ -309,7 +336,7 @@ def upload_file():
         except Exception as e:
             logger.error(f"Error during file upload processing: {str(e)}")
             logger.error(f"Error type: {type(e)}")
-            logger.error(f"Traceback: {sys.exc_info()}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             flash(f'Error processing upload: {str(e)}', 'error')
             return redirect(url_for('index'))
     
@@ -321,20 +348,66 @@ def upload_file():
 def status(task_id):
     """Status page for a specific task"""
     task_status = get_task_status(task_id)
-    return render_template('status.html', task_id=task_id, status=task_status)
+    if task_status is None:
+        return render_template('status.html', task_id=task_id, error="Task not found")
+    
+    # Create a copy of task_status to avoid modifying the original
+    formatted_status = task_status.copy()
+    
+    # Only convert timestamps if they are not already datetime objects
+    if 'start_time' in formatted_status and not isinstance(formatted_status['start_time'], datetime):
+        try:
+            formatted_status['start_time'] = float(formatted_status['start_time'])
+        except (ValueError, TypeError):
+            formatted_status['start_time'] = None
+            
+    if 'end_time' in formatted_status and not isinstance(formatted_status['end_time'], datetime):
+        try:
+            formatted_status['end_time'] = float(formatted_status['end_time'])
+        except (ValueError, TypeError):
+            formatted_status['end_time'] = None
+    
+    return render_template('status.html', task_id=task_id, status=formatted_status)
 
 @app.route('/api/status/<task_id>')
 def api_status(task_id):
     """API endpoint for getting task status"""
-    return jsonify(get_task_status(task_id))
+    task_status = get_task_status(task_id)
+    if task_status['status'] == 'unknown':
+        return jsonify({'error': 'Task not found'}), 404
+    
+    # Ensure all necessary fields are present
+    response_data = {
+        'status': task_status.get('status', 'unknown'),
+        'progress': task_status.get('progress', 0),
+        'message': task_status.get('message', ''),
+        'logs': task_status.get('logs', []),
+        'start_time': task_status.get('start_time'),
+        'output_file': task_status.get('output_file')
+    }
+    
+    return jsonify(response_data)
 
 @app.route('/download/<task_id>')
 def download(task_id):
     """Download the generated video file"""
     task_status = get_task_status(task_id)
     if task_status.get('status') == 'completed' and 'output_file' in task_status:
-        return send_from_directory(app.config['OUTPUT_FOLDER'], task_status['output_file'], as_attachment=True)
-    flash('File not ready for download.', 'error')
+        output_file = task_status['output_file']
+        file_path = os.path.join(app.config['OUTPUT_FOLDER'], output_file)
+        
+        if os.path.exists(file_path):
+            return send_from_directory(
+                app.config['OUTPUT_FOLDER'],
+                output_file,
+                as_attachment=True,
+                download_name=output_file
+            )
+        else:
+            flash('Output file not found.', 'error')
+    else:
+        flash('File not ready for download.', 'error')
+    
     return redirect(url_for('status', task_id=task_id))
 
 @app.route('/test_apis')

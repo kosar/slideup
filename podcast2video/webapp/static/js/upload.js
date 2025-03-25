@@ -85,6 +85,23 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
+        // Validate file type
+        const file = fileInput.files[0];
+        const fileType = file.type.toLowerCase();
+        if (!fileType.includes('audio/') && !file.name.toLowerCase().endsWith('.mp3') && !file.name.toLowerCase().endsWith('.wav')) {
+            console.log('Invalid file type:', fileType);
+            alert('Please select an MP3 or WAV audio file');
+            return;
+        }
+        
+        // Validate file size (100MB limit)
+        const maxSize = 100 * 1024 * 1024; // 100MB in bytes
+        if (file.size > maxSize) {
+            console.log('File too large:', file.size);
+            alert('File size exceeds 100MB limit');
+            return;
+        }
+        
         console.log('Starting file upload');
         
         // Show loading state
@@ -94,32 +111,33 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Create FormData and append file
         const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
+        formData.append('file', file);
         
         // Add any other form data
         if (document.getElementById('limit_to_one_minute').checked) {
             formData.append('limit_to_one_minute', 'true');
         }
         
-        // Send the file using fetch
-        fetch('/upload', {
+        // Submit the form
+        fetch(uploadForm.action, {
             method: 'POST',
             body: formData
         })
         .then(response => {
-            console.log('Upload response status:', response.status);
             if (!response.ok) {
-                throw new Error('Network response was not ok');
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
-            return response.text();
-        })
-        .then(data => {
-            console.log('Upload successful:', data);
-            window.location.href = data; // Redirect to the response URL
+            // Get the redirect URL from the response
+            const redirectUrl = response.url;
+            if (!redirectUrl) {
+                throw new Error('No redirect URL received');
+            }
+            // Redirect to the status page
+            window.location.href = redirectUrl;
         })
         .catch(error => {
             console.error('Upload error:', error);
-            alert('Error uploading file: ' + error.message);
+            alert('Error uploading file. Please try again.');
             // Reset button state
             btnText.textContent = 'Convert to Video';
             spinner.classList.add('d-none');

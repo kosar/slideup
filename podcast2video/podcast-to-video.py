@@ -1169,219 +1169,88 @@ SEGMENT_MIN_DURATION = 12    # Minimum segment duration
 SEGMENT_MAX_DURATION = 35    # Maximum segment duration
 SEGMENT_TARGET_DURATION = 25 # Ideal segment duration
 
+def calculate_text_coherence(text1, text2):
+    """Calculate how well two text segments fit together semantically.
+    Returns a score between 0 and 1, where 1 indicates high coherence."""
+    try:
+        # Simple coherence check based on sentence completion
+        combined = f"{text1} {text2}".lower()
+        
+        # Check for sentence boundaries
+        if text1.strip().endswith(('.', '!', '?')):
+            return 0.3  # Natural break point
+        
+        # Check if second segment completes a thought from first
+        if any(word in combined for word in ['and', 'but', 'or', 'so', 'because', 'however', 'therefore']):
+            return 0.8  # Likely connected thoughts
+            
+        # Check for subject-verb continuity
+        words1 = text1.strip().split()
+        words2 = text2.strip().split()
+        if words1[-1].lower() in ['the', 'a', 'an'] or words1[-1].endswith('ly'):
+            return 0.9  # Incomplete phrase that likely continues
+            
+        # Default moderate coherence for other cases
+        return 0.5
+        
+    except Exception as e:
+        logger.warning(f"Error in coherence calculation: {str(e)}")
+        return 0.5  # Default to moderate coherence on error
+
 def normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25):
     """Normalize segment durations by combining or splitting segments."""
     if not segments:
-        logger.warning("No segments to normalize")
         return []
 
-    # Log initial state
-    logger.info("\n=== SEGMENT NORMALIZATION START ===")
-    logger.info(f"Initial segment count: {len(segments)}")
-    logger.info("Initial segments:")
-    for i, s in enumerate(segments, 1):
-        # Calculate duration from start and end times if not present
-        if 'duration' not in s and 'start' in s and 'end' in s:
-            s['duration'] = s['end'] - s['start']
-            logger.info(f"Calculated duration for segment {i}: {s['duration']:.2f}s (from start: {s['start']:.2f}s, end: {s['end']:.2f}s)")
-        duration = float(s.get('duration', 0))
-        text_preview = s.get('text', '')[:100] + '...' if len(s.get('text', '')) > 100 else s.get('text', '')
-        logger.info(f"Segment {i}:")
-        logger.info(f"  Duration: {duration:.2f}s")
-        logger.info(f"  Text: {text_preview}")
-        logger.info(f"  Start: {s.get('start', 0):.2f}s")
-        logger.info(f"  End: {s.get('end', 0):.2f}s")
-        logger.info("---")
-
-    # Convert durations to float and filter out invalid segments
-    valid_segments = []
-    for i, s in enumerate(segments, 1):
-        try:
-            # Calculate duration if not present
-            if 'duration' not in s and 'start' in s and 'end' in s:
-                s['duration'] = s['end'] - s['start']
-                logger.info(f"Calculated duration for segment {i} during validation: {s['duration']:.2f}s")
-            duration = float(s.get('duration', 0))
-            if duration > 0:
-                s['duration'] = duration
-                valid_segments.append(s)
-                logger.info(f"Segment {i} validated successfully with duration {duration:.2f}s")
-            else:
-                logger.warning(f"Segment {i} rejected due to invalid duration: {duration:.2f}s")
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Error processing segment {i}: {e}")
-            continue
-
-    if not valid_segments:
-        logger.warning("No valid segment durations found")
-        logger.warning("Original segments will be returned without normalization")
-        return segments  # Return original segments if no valid durations
-
-    # Log segment statistics
-    logger.info("\n=== SEGMENT STATISTICS ===")
-    durations = [s['duration'] for s in valid_segments]
-    logger.info(f"Valid segments: {len(valid_segments)}")
-    logger.info(f"Duration range: {min(durations):.2f}s to {max(durations):.2f}s")
-    logger.info(f"Average duration: {sum(durations) / len(durations):.2f}s")
-    logger.info(f"Total duration: {sum(durations):.2f}s")
-
-    # If total duration is very short, return single combined segment
-    total_duration = sum(durations)
-    if total_duration <= min_duration:
-        logger.info(f"\nTotal duration ({total_duration:.2f}s) is less than minimum ({min_duration}s)")
-        logger.info("Returning single combined segment")
-        combined_text = " ".join(s.get('text', '') for s in valid_segments)
-        combined = valid_segments[0].copy()
-        combined.update({
-            'text': combined_text,
-            'duration': total_duration,
-            'start': valid_segments[0].get('start', 0),
-            'end': valid_segments[-1].get('end', total_duration)
-        })
-        logger.info("\n=== FINAL COMBINED SEGMENT ===")
-        logger.info(f"Duration: {combined['duration']:.2f}s")
-        logger.info(f"Text: {combined['text'][:200]}...")
-        logger.info(f"Start: {combined['start']:.2f}s")
-        logger.info(f"End: {combined['end']:.2f}s")
-        return [combined]
-
-    # First pass: merge very short segments and highly coherent segments
     normalized = []
     current = None
 
-    for i, segment in enumerate(valid_segments, 1):
+    for segment in segments:
         if not current:
             current = segment.copy()
-            logger.info(f"\nStarting new segment group with segment {i}")
             continue
 
-        current_duration = current['duration']
-        next_duration = segment['duration']
-        merged_duration = current_duration + next_duration
+        # Calculate coherence between current and next segment
         coherence_score = calculate_text_coherence(current['text'], segment['text'])
         
-        # Define merge conditions
-        should_merge = (
-            (current_duration < min_duration) or  # Current segment too short
-            (next_duration < min_duration) or     # Next segment too short
-            (merged_duration <= max_duration and coherence_score > 0.6) or  # High coherence and within max
-            (merged_duration <= target_duration and coherence_score > 0.8)  # Very high coherence and within target
-        )
+        # Decide whether to combine based on duration and coherence
+        combined_duration = current['end'] - current['start'] + segment['end'] - segment['start']
         
-        if should_merge:
-            # Log merge decision
-            logger.info(f"\nMerging segments {i-1} and {i}:")
-            logger.info(f"Segment 1: {current['text'][:100]}...")
-            logger.info(f"Segment 2: {segment['text'][:100]}...")
-            logger.info(f"Coherence score: {coherence_score:.2f}")
-            logger.info(f"Combined duration: {merged_duration:.2f}s")
-            
-            # Preserve all fields from both segments when merging
-            merged = current.copy()
-            merged['duration'] = merged_duration
-            merged['text'] = f"{current['text'].rstrip()} {segment['text'].lstrip()}"
-            merged['end'] = segment.get('end', current.get('end', 0) + next_duration)
-            
-            # Merge any other fields that exist in both segments
-            for key in segment:
-                if key not in ['duration', 'text', 'start', 'end']:
-                    if key in current:
-                        # If the field exists in both, combine them (assuming they're compatible types)
-                        if isinstance(current[key], list) and isinstance(segment[key], list):
-                            merged[key] = current[key] + segment[key]
-                        elif isinstance(current[key], dict) and isinstance(segment[key], dict):
-                            merged[key] = {**current[key], **segment[key]}
-                        else:
-                            # For other types, keep the most recent value
-                            merged[key] = segment[key]
-                    else:
-                        # If the field only exists in the second segment, copy it
-                        merged[key] = segment[key]
-            current = merged
-            logger.info(f"Successfully merged segments {i-1} and {i}")
+        if combined_duration <= max_duration and coherence_score > 0.7:
+            # Combine segments if they're coherent and not too long
+            current['end'] = segment['end']
+            current['text'] += ' ' + segment['text']
         else:
-            if current_duration >= min_duration:
-                normalized.append(current)
-                logger.info(f"Added segment {i-1} to normalized list (duration: {current_duration:.2f}s)")
+            # If current segment is too short and we couldn't combine, try to adjust timing
+            if current['end'] - current['start'] < min_duration:
+                # Extend the segment duration if possible
+                available_extension = min(
+                    segment['start'] - current['end'],  # Space until next segment
+                    min_duration - (current['end'] - current['start'])  # Required extension
+                )
+                if available_extension > 0:
+                    current['end'] += available_extension
+
+            normalized.append(current)
             current = segment.copy()
-            logger.info(f"Starting new segment group with segment {i}")
-    
+
     # Don't forget the last segment
-    if current and current['duration'] >= min_duration:
+    if current:
         normalized.append(current)
-        logger.info(f"Added final segment to normalized list (duration: {current['duration']:.2f}s)")
-    
-    # Second pass: split long segments
-    final_segments = []
-    for i, segment in enumerate(normalized, 1):
-        duration = segment['duration']
-        
-        if duration > max_duration:
-            # Calculate number of parts needed
-            num_parts = max(2, int(duration / target_duration + 0.5))
-            part_duration = duration / num_parts
-            text = segment['text']
-            start_time = segment.get('start', 0)
-            
-            logger.info(f"\nSplitting long segment {i}:")
-            logger.info(f"Original duration: {duration:.2f}s")
-            logger.info(f"Number of parts: {num_parts}")
-            logger.info(f"Part duration: {part_duration:.2f}s")
-            
-            # Split segment into parts
-            for j in range(num_parts):
-                ratio = (j + 1) / num_parts
-                if j == num_parts - 1:
-                    # Last part gets the rest
-                    part_text = text
-                    part_duration = duration - (part_duration * j)
-                else:
-                    # Find natural boundary for split
-                    split_pos = find_sentence_boundary(text, ratio)
-                    part_text = text[:split_pos].strip()
-                    text = text[split_pos:].strip()
-                    part_duration = duration / num_parts
-                
-                if part_text:  # Only add if there's actual text
-                    # Create new segment with all fields from original
-                    new_segment = segment.copy()
-                    new_segment.update({
-                        'duration': part_duration,
-                        'text': part_text,
-                        'start': start_time + (j * part_duration),
-                        'end': start_time + ((j + 1) * part_duration)
-                    })
-                    final_segments.append(new_segment)
-                    logger.info(f"\nPart {j+1}:")
-                    logger.info(f"Duration: {part_duration:.2f}s")
-                    logger.info(f"Text: {part_text[:100]}...")
-                    logger.info(f"Start: {new_segment['start']:.2f}s")
-                    logger.info(f"End: {new_segment['end']:.2f}s")
-        else:
-            final_segments.append(segment)
-            logger.info(f"Added segment {i} to final list (duration: {duration:.2f}s)")
-    
-    # Final pass: clean up and validate
-    final_segments.sort(key=lambda x: x.get('start', 0))
-    
-    # Log final statistics
-    logger.info("\n=== FINAL NORMALIZATION RESULTS ===")
-    logger.info(f"Final segment count: {len(final_segments)}")
-    final_durations = [s['duration'] for s in final_segments]
-    logger.info(f"Final duration range: {min(final_durations):.2f}s to {max(final_durations):.2f}s")
-    logger.info(f"Final average duration: {sum(final_durations) / len(final_durations):.2f}s")
-    logger.info(f"Final total duration: {sum(final_durations):.2f}s")
-    
-    logger.info("\nFinal segments:")
-    for i, s in enumerate(final_segments, 1):
-        logger.info(f"\nSegment {i}:")
-        logger.info(f"Duration: {s['duration']:.2f}s")
-        logger.info(f"Text: {s['text'][:100]}...")
-        logger.info(f"Start: {s['start']:.2f}s")
-        logger.info(f"End: {s['end']:.2f}s")
-    
-    logger.info("\n=== SEGMENT NORMALIZATION COMPLETE ===")
-    return final_segments
+
+    # Final pass to adjust segment durations closer to target
+    for segment in normalized:
+        duration = segment['end'] - segment['start']
+        if duration < min_duration:
+            # Try to extend short segments
+            extension = min(min_duration - duration, 2.0)  # Max 2 second extension
+            segment['end'] += extension
+        elif duration > max_duration:
+            # Trim overly long segments
+            reduction = min(duration - max_duration, 2.0)  # Max 2 second reduction
+            segment['end'] -= reduction
+
+    return normalized
 
 def write_segments_to_srt(segments, output_path):
     """Write segments to SRT file with validation and safety measures."""

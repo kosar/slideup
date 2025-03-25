@@ -43,6 +43,16 @@
                             <div class="alert alert-info">
                                 <p><strong>Task ID:</strong> {{ task_id }}</p>
                                 <p><strong>Status:</strong> <span id="status-text">{{ status.status }}</span></p>
+                                {% if status.start_time %}
+                                <p><strong>Started:</strong> {{ status.start_time | datetime }}</p>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div id="logs-section" class="mb-4">
+                            <h5>Processing Logs</h5>
+                            <div class="border rounded p-3" style="max-height: 200px; overflow-y: auto;">
+                                <pre id="logs-content" class="mb-0">{{ status.logs | join('\n') }}</pre>
                             </div>
                         </div>
                         
@@ -50,8 +60,8 @@
                             <div class="alert alert-success">
                                 <h5>Processing Complete!</h5>
                                 <p>Your video is ready for download.</p>
-                                <a href="{{ url_for('download', task_id=task_id) }}" class="btn btn-success btn-lg">
-                                    <i class="bi bi-download"></i> Download Video
+                                <a href="{{ url_for('download', task_id=task_id) }}" class="btn btn-success btn-lg" id="download-button">
+                                    Download Video
                                 </a>
                             </div>
                         </div>
@@ -81,12 +91,19 @@
         const taskId = "{{ task_id }}";
         const statusUrl = "/api/status/" + taskId;
         let pollInterval;
+        let lastLogCount = {{ status.logs | length }};
+        let startTime = new Date().getTime();
         
         function updateStatus() {
             fetch(statusUrl)
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
-                    console.log('Status update:', data);  // Add logging
+                    console.log('Status update:', data);
                     
                     // Update progress bar
                     const progressBar = document.getElementById('progress-bar');
@@ -98,12 +115,19 @@
                     document.getElementById('status-message').textContent = data.message;
                     document.getElementById('status-text').textContent = data.status;
                     
+                    // Update logs if new entries exist
+                    if (data.logs && data.logs.length > lastLogCount) {
+                        const logsContent = document.getElementById('logs-content');
+                        logsContent.textContent = data.logs.join('\n');
+                        logsContent.scrollTop = logsContent.scrollHeight;
+                        lastLogCount = data.logs.length;
+                    }
+                    
                     // Show/hide sections based on status
                     if (data.status === 'completed') {
                         document.getElementById('download-section').classList.remove('d-none');
+                        document.getElementById('download-button').href = `/download/${taskId}`;
                         clearInterval(pollInterval);
-                        // Force page refresh to ensure download link is properly set up
-                        window.location.reload();
                     } else if (data.status === 'failed') {
                         document.getElementById('error-section').classList.remove('d-none');
                         document.getElementById('error-message').textContent = data.message;
@@ -112,6 +136,7 @@
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
+                    // Don't stop polling on network errors
                 });
         }
         
@@ -120,12 +145,17 @@
             // Initial check of status
             updateStatus();
             
-            // Set up polling every 1 second (changed from 2 seconds)
+            // Set up polling every 1 second
             pollInterval = setInterval(updateStatus, 1000);
             
             // Stop polling after 30 minutes (prevents runaway polling)
             setTimeout(() => {
                 clearInterval(pollInterval);
+                if (document.getElementById('status-text').textContent !== 'completed' && 
+                    document.getElementById('status-text').textContent !== 'failed') {
+                    document.getElementById('error-section').classList.remove('d-none');
+                    document.getElementById('error-message').textContent = 'Processing timed out after 30 minutes.';
+                }
             }, 30 * 60 * 1000);
         });
     </script>
