@@ -135,7 +135,7 @@ fi
 
 # Check/Create virtual environment
 print_header "Setting up Python Virtual Environment"
-VENV_DIR="$SCRIPT_DIR/test_env"
+VENV_DIR="$SCRIPT_DIR/venv"
 
 if [ -d "$VENV_DIR" ]; then
     print_success "Found existing virtual environment"
@@ -155,13 +155,30 @@ print_header "Creating Test Audio File"
 TEST_AUDIO="$SCRIPT_DIR/test_resources/test_audio.wav"
 mkdir -p "$SCRIPT_DIR/test_resources"
 
-if [ ! -f "$TEST_AUDIO" ]; then
-    print_warning "Generating test audio file"
-    # Generate a 5-second test audio file using ffmpeg
-    ffmpeg -f lavfi -i "sine=frequency=440:duration=5" -ar 44100 "$TEST_AUDIO"
+if [ ! -f "$TEST_AUDIO" ] || [ "$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$TEST_AUDIO")" != "5.000000" ]; then
+    print_warning "Generating 5-second test audio file with speech"
+    # Generate a text file with test speech
+    echo "This is a test audio file for podcast to video conversion. We are testing the duration matching functionality." > "$SCRIPT_DIR/test_resources/test_speech.txt"
+    
+    # Use macOS say command to generate speech
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        say -v Samantha -r 175 -f "$SCRIPT_DIR/test_resources/test_speech.txt" -o "$TEST_AUDIO.aiff"
+        # Convert to WAV format
+        ffmpeg -y -i "$TEST_AUDIO.aiff" -acodec pcm_s16le -ar 44100 -ac 2 "$TEST_AUDIO"
+        rm -f "$TEST_AUDIO.aiff"
+    else
+        # Fallback to ffmpeg sine wave if not on macOS
+        ffmpeg -y -f lavfi -i "sine=frequency=440:duration=5" -ar 44100 "$TEST_AUDIO"
+    fi
+    
+    # Clean up
+    rm -f "$SCRIPT_DIR/test_resources/test_speech.txt"
 else
     print_success "Using existing test audio file"
 fi
+
+# Force regenerate the transcript
+rm -f "$SCRIPT_DIR/transcripts/test_audio.srt"
 
 # Run the test
 print_header "Running Core Functionality Test"
@@ -174,8 +191,8 @@ TEST_LOG="$SCRIPT_DIR/test_resources/test.log"
 python3 "$SCRIPT_DIR/podcast-to-video.py" \
     --input "$TEST_AUDIO" \
     --output "$TEST_OUTPUT" \
-    --non_interactive \
-    --limit_to_one_minute 2>&1 | tee "$TEST_LOG"
+    --force_transcription \
+    --non_interactive 2>&1 | tee "$TEST_LOG"
 
 # Check results
 print_header "Checking Test Results"
@@ -185,12 +202,22 @@ if [ -f "$TEST_OUTPUT" ] && [ -s "$TEST_OUTPUT" ]; then
     print_success "Output video file created successfully"
     
     # Get video duration using ffprobe
-    DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$TEST_OUTPUT")
+    VIDEO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$TEST_OUTPUT")
+    AUDIO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$TEST_AUDIO")
     
-    if (( $(echo "$DURATION > 0" | bc -l) )); then
-        print_success "Video duration check passed: ${DURATION}s"
+    if (( $(echo "$VIDEO_DURATION > 0" | bc -l) )); then
+        print_success "Video duration: ${VIDEO_DURATION}s"
+        print_success "Audio duration: ${AUDIO_DURATION}s"
+        
+        # Allow for a small difference (0.1 seconds) to account for encoding variations
+        DURATION_DIFF=$(echo "scale=3; ($VIDEO_DURATION - $AUDIO_DURATION)" | bc)
+        if (( $(echo "sqrt($DURATION_DIFF * $DURATION_DIFF) <= 0.1" | bc -l) )); then
+            print_success "Duration check passed: Video matches audio length"
+        else
+            print_warning "Duration mismatch: Video (${VIDEO_DURATION}s) differs from audio (${AUDIO_DURATION}s)"
+        fi
     else
-        print_error "Video duration check failed: ${DURATION}s"
+        print_error "Video duration check failed: ${VIDEO_DURATION}s"
     fi
     
     # Check if transcription was created

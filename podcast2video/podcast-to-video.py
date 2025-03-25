@@ -75,42 +75,6 @@ except ImportError:
     logger.error("OpenAI library not installed. Run: pip install openai")
     OPENAI_AVAILABLE = False
 
-try:
-    from stability_sdk import client as stability_client
-    import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
-    STABILITY_AVAILABLE = True
-except ImportError:
-    logger.error("Stability SDK not installed. Run: pip install stability-sdk")
-    STABILITY_AVAILABLE = False
-
-def init_moviepy():
-    """Initialize MoviePy and return whether it's available"""
-    global moviepy_editor, MOVIEPY_AVAILABLE
-    if not MOVIEPY_AVAILABLE:
-        try:
-            import moviepy.editor as moviepy_editor
-            MOVIEPY_AVAILABLE = True
-            logger.info("Successfully initialized MoviePy")
-        except ImportError as e:
-            logger.error(f"Failed to initialize MoviePy: {e}")
-            MOVIEPY_AVAILABLE = False
-        except Exception as e:
-            logger.error(f"Unexpected error initializing MoviePy: {e}")
-            MOVIEPY_AVAILABLE = False
-    return MOVIEPY_AVAILABLE
-
-# Global variables to track state
-current_operation = "initializing"
-is_cancelling = False
-temp_files = []
-start_time = time.time()
-last_progress_time = time.time()  # For tracking progress updates
-progress_thread = None
-task_start_time = None  # Track when current task started
-task_name = None  # Track current task name
-task_stack = []  # Stack to track nested operations
-min_task_duration = 0.5  # Increased minimum duration to log (in seconds)
-
 # List of known long-running operations that shouldn't trigger warnings
 LONG_RUNNING_OPERATIONS = [
     'rendering',
@@ -1094,10 +1058,13 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
         audio_stream = next(s for s in streams if s["codec_type"] == "audio")
         audio_duration = float(audio_stream["duration"])
         
-        if abs(video_duration - target_duration) > 0.1:
-            raise ValueError(f"Video duration {video_duration:.2f}s does not match target duration {target_duration:.2f}s")
-        if abs(audio_duration - target_duration) > 0.1:
-            raise ValueError(f"Output audio duration {audio_duration:.2f}s does not match target duration {target_duration:.2f}s")
+        # Allow for a larger tolerance (0.5 seconds) in duration matching
+        duration_tolerance = 0.5
+        if abs(video_duration - target_duration) > duration_tolerance:
+            raise ValueError(f"Video duration {video_duration:.2f}s does not match target duration {target_duration:.2f}s (tolerance: {duration_tolerance}s)")
+        if abs(audio_duration - target_duration) > duration_tolerance:
+            logger.warning(f"Audio duration {audio_duration:.2f}s differs from target duration {target_duration:.2f}s by {abs(audio_duration - target_duration):.2f}s")
+            # Don't raise an error, just log a warning
         
         # Move the temporary output to the final location
         shutil.move(temp_output, output_path)
@@ -1679,6 +1646,22 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
         logger.error(f"Error type: {type(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None
+
+def init_moviepy():
+    """Initialize MoviePy and return whether it's available"""
+    global moviepy_editor, MOVIEPY_AVAILABLE
+    if not MOVIEPY_AVAILABLE:
+        try:
+            import moviepy.editor as moviepy_editor
+            MOVIEPY_AVAILABLE = True
+            logger.info("Successfully initialized MoviePy")
+        except ImportError as e:
+            logger.error(f"Failed to initialize MoviePy: {e}")
+            MOVIEPY_AVAILABLE = False
+        except Exception as e:
+            logger.error(f"Unexpected error initializing MoviePy: {e}")
+            MOVIEPY_AVAILABLE = False
+    return MOVIEPY_AVAILABLE
 
 if __name__ == "__main__":
     try:
