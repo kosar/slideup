@@ -1164,6 +1164,272 @@ def validate_audio_file(audio_path):
     except Exception as e:
         raise ValueError(f"Error validating audio file: {str(e)}")
 
+# Add to global configuration
+SEGMENT_MIN_DURATION = 12    # Minimum segment duration
+SEGMENT_MAX_DURATION = 35    # Maximum segment duration
+SEGMENT_TARGET_DURATION = 25 # Ideal segment duration
+
+def normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25):
+    """Normalize segment durations by combining or splitting segments."""
+    if not segments:
+        logger.warning("No segments to normalize")
+        return []
+
+    # Log initial state
+    logger.info("\n=== SEGMENT NORMALIZATION START ===")
+    logger.info(f"Initial segment count: {len(segments)}")
+    logger.info("Initial segments:")
+    for i, s in enumerate(segments, 1):
+        # Calculate duration from start and end times if not present
+        if 'duration' not in s and 'start' in s and 'end' in s:
+            s['duration'] = s['end'] - s['start']
+            logger.info(f"Calculated duration for segment {i}: {s['duration']:.2f}s (from start: {s['start']:.2f}s, end: {s['end']:.2f}s)")
+        duration = float(s.get('duration', 0))
+        text_preview = s.get('text', '')[:100] + '...' if len(s.get('text', '')) > 100 else s.get('text', '')
+        logger.info(f"Segment {i}:")
+        logger.info(f"  Duration: {duration:.2f}s")
+        logger.info(f"  Text: {text_preview}")
+        logger.info(f"  Start: {s.get('start', 0):.2f}s")
+        logger.info(f"  End: {s.get('end', 0):.2f}s")
+        logger.info("---")
+
+    # Convert durations to float and filter out invalid segments
+    valid_segments = []
+    for i, s in enumerate(segments, 1):
+        try:
+            # Calculate duration if not present
+            if 'duration' not in s and 'start' in s and 'end' in s:
+                s['duration'] = s['end'] - s['start']
+                logger.info(f"Calculated duration for segment {i} during validation: {s['duration']:.2f}s")
+            duration = float(s.get('duration', 0))
+            if duration > 0:
+                s['duration'] = duration
+                valid_segments.append(s)
+                logger.info(f"Segment {i} validated successfully with duration {duration:.2f}s")
+            else:
+                logger.warning(f"Segment {i} rejected due to invalid duration: {duration:.2f}s")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error processing segment {i}: {e}")
+            continue
+
+    if not valid_segments:
+        logger.warning("No valid segment durations found")
+        logger.warning("Original segments will be returned without normalization")
+        return segments  # Return original segments if no valid durations
+
+    # Log segment statistics
+    logger.info("\n=== SEGMENT STATISTICS ===")
+    durations = [s['duration'] for s in valid_segments]
+    logger.info(f"Valid segments: {len(valid_segments)}")
+    logger.info(f"Duration range: {min(durations):.2f}s to {max(durations):.2f}s")
+    logger.info(f"Average duration: {sum(durations) / len(durations):.2f}s")
+    logger.info(f"Total duration: {sum(durations):.2f}s")
+
+    # If total duration is very short, return single combined segment
+    total_duration = sum(durations)
+    if total_duration <= min_duration:
+        logger.info(f"\nTotal duration ({total_duration:.2f}s) is less than minimum ({min_duration}s)")
+        logger.info("Returning single combined segment")
+        combined_text = " ".join(s.get('text', '') for s in valid_segments)
+        combined = valid_segments[0].copy()
+        combined.update({
+            'text': combined_text,
+            'duration': total_duration,
+            'start': valid_segments[0].get('start', 0),
+            'end': valid_segments[-1].get('end', total_duration)
+        })
+        logger.info("\n=== FINAL COMBINED SEGMENT ===")
+        logger.info(f"Duration: {combined['duration']:.2f}s")
+        logger.info(f"Text: {combined['text'][:200]}...")
+        logger.info(f"Start: {combined['start']:.2f}s")
+        logger.info(f"End: {combined['end']:.2f}s")
+        return [combined]
+
+    # First pass: merge very short segments and highly coherent segments
+    normalized = []
+    current = None
+
+    for i, segment in enumerate(valid_segments, 1):
+        if not current:
+            current = segment.copy()
+            logger.info(f"\nStarting new segment group with segment {i}")
+            continue
+
+        current_duration = current['duration']
+        next_duration = segment['duration']
+        merged_duration = current_duration + next_duration
+        coherence_score = calculate_text_coherence(current['text'], segment['text'])
+        
+        # Define merge conditions
+        should_merge = (
+            (current_duration < min_duration) or  # Current segment too short
+            (next_duration < min_duration) or     # Next segment too short
+            (merged_duration <= max_duration and coherence_score > 0.6) or  # High coherence and within max
+            (merged_duration <= target_duration and coherence_score > 0.8)  # Very high coherence and within target
+        )
+        
+        if should_merge:
+            # Log merge decision
+            logger.info(f"\nMerging segments {i-1} and {i}:")
+            logger.info(f"Segment 1: {current['text'][:100]}...")
+            logger.info(f"Segment 2: {segment['text'][:100]}...")
+            logger.info(f"Coherence score: {coherence_score:.2f}")
+            logger.info(f"Combined duration: {merged_duration:.2f}s")
+            
+            # Preserve all fields from both segments when merging
+            merged = current.copy()
+            merged['duration'] = merged_duration
+            merged['text'] = f"{current['text'].rstrip()} {segment['text'].lstrip()}"
+            merged['end'] = segment.get('end', current.get('end', 0) + next_duration)
+            
+            # Merge any other fields that exist in both segments
+            for key in segment:
+                if key not in ['duration', 'text', 'start', 'end']:
+                    if key in current:
+                        # If the field exists in both, combine them (assuming they're compatible types)
+                        if isinstance(current[key], list) and isinstance(segment[key], list):
+                            merged[key] = current[key] + segment[key]
+                        elif isinstance(current[key], dict) and isinstance(segment[key], dict):
+                            merged[key] = {**current[key], **segment[key]}
+                        else:
+                            # For other types, keep the most recent value
+                            merged[key] = segment[key]
+                    else:
+                        # If the field only exists in the second segment, copy it
+                        merged[key] = segment[key]
+            current = merged
+            logger.info(f"Successfully merged segments {i-1} and {i}")
+        else:
+            if current_duration >= min_duration:
+                normalized.append(current)
+                logger.info(f"Added segment {i-1} to normalized list (duration: {current_duration:.2f}s)")
+            current = segment.copy()
+            logger.info(f"Starting new segment group with segment {i}")
+    
+    # Don't forget the last segment
+    if current and current['duration'] >= min_duration:
+        normalized.append(current)
+        logger.info(f"Added final segment to normalized list (duration: {current['duration']:.2f}s)")
+    
+    # Second pass: split long segments
+    final_segments = []
+    for i, segment in enumerate(normalized, 1):
+        duration = segment['duration']
+        
+        if duration > max_duration:
+            # Calculate number of parts needed
+            num_parts = max(2, int(duration / target_duration + 0.5))
+            part_duration = duration / num_parts
+            text = segment['text']
+            start_time = segment.get('start', 0)
+            
+            logger.info(f"\nSplitting long segment {i}:")
+            logger.info(f"Original duration: {duration:.2f}s")
+            logger.info(f"Number of parts: {num_parts}")
+            logger.info(f"Part duration: {part_duration:.2f}s")
+            
+            # Split segment into parts
+            for j in range(num_parts):
+                ratio = (j + 1) / num_parts
+                if j == num_parts - 1:
+                    # Last part gets the rest
+                    part_text = text
+                    part_duration = duration - (part_duration * j)
+                else:
+                    # Find natural boundary for split
+                    split_pos = find_sentence_boundary(text, ratio)
+                    part_text = text[:split_pos].strip()
+                    text = text[split_pos:].strip()
+                    part_duration = duration / num_parts
+                
+                if part_text:  # Only add if there's actual text
+                    # Create new segment with all fields from original
+                    new_segment = segment.copy()
+                    new_segment.update({
+                        'duration': part_duration,
+                        'text': part_text,
+                        'start': start_time + (j * part_duration),
+                        'end': start_time + ((j + 1) * part_duration)
+                    })
+                    final_segments.append(new_segment)
+                    logger.info(f"\nPart {j+1}:")
+                    logger.info(f"Duration: {part_duration:.2f}s")
+                    logger.info(f"Text: {part_text[:100]}...")
+                    logger.info(f"Start: {new_segment['start']:.2f}s")
+                    logger.info(f"End: {new_segment['end']:.2f}s")
+        else:
+            final_segments.append(segment)
+            logger.info(f"Added segment {i} to final list (duration: {duration:.2f}s)")
+    
+    # Final pass: clean up and validate
+    final_segments.sort(key=lambda x: x.get('start', 0))
+    
+    # Log final statistics
+    logger.info("\n=== FINAL NORMALIZATION RESULTS ===")
+    logger.info(f"Final segment count: {len(final_segments)}")
+    final_durations = [s['duration'] for s in final_segments]
+    logger.info(f"Final duration range: {min(final_durations):.2f}s to {max(final_durations):.2f}s")
+    logger.info(f"Final average duration: {sum(final_durations) / len(final_durations):.2f}s")
+    logger.info(f"Final total duration: {sum(final_durations):.2f}s")
+    
+    logger.info("\nFinal segments:")
+    for i, s in enumerate(final_segments, 1):
+        logger.info(f"\nSegment {i}:")
+        logger.info(f"Duration: {s['duration']:.2f}s")
+        logger.info(f"Text: {s['text'][:100]}...")
+        logger.info(f"Start: {s['start']:.2f}s")
+        logger.info(f"End: {s['end']:.2f}s")
+    
+    logger.info("\n=== SEGMENT NORMALIZATION COMPLETE ===")
+    return final_segments
+
+def write_segments_to_srt(segments, output_path):
+    """Write segments to SRT file with validation and safety measures."""
+    try:
+        # Validate segments before writing
+        for i, segment in enumerate(segments, 1):
+            required_fields = ['start', 'end', 'text']
+            missing_fields = [field for field in required_fields if field not in segment]
+            if missing_fields:
+                raise ValueError(f"Segment {i} is missing required fields: {', '.join(missing_fields)}")
+            
+            # Validate timing
+            if segment['start'] >= segment['end']:
+                raise ValueError(f"Segment {i} has invalid timing: start ({segment['start']}) >= end ({segment['end']})")
+            
+            # Validate text
+            if not segment['text'].strip():
+                raise ValueError(f"Segment {i} has empty text")
+        
+        # Create backup of existing file if it exists
+        if os.path.exists(output_path):
+            backup_path = output_path + '.bak'
+            shutil.copy2(output_path, backup_path)
+            logger.info(f"Created backup of existing transcript: {backup_path}")
+        
+        # Write segments to file
+        with open(output_path, "w", encoding="utf-8") as f:
+            for i, segment in enumerate(segments, 1):
+                # Format timestamps
+                start = format_timestamp(segment["start"])
+                end = format_timestamp(segment["end"])
+                
+                # Write segment
+                f.write(f"{i}\n")
+                f.write(f"{start} --> {end}\n")
+                f.write(f"{segment['text']}\n\n")
+        
+        logger.info(f"Successfully wrote {len(segments)} segments to {output_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error writing segments to SRT file: {str(e)}")
+        # Restore backup if it exists
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, output_path)
+            logger.info(f"Restored backup file after error: {output_path}")
+        return False
+
 def transcribe_audio(audio_path, force_transcription=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp", limit_to_one_minute=False):
     """Transcribe audio file using OpenAI's Whisper model"""
     try:
@@ -1172,7 +1438,22 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         
         if os.path.exists(transcript_path) and not force_transcription:
             logger.info(f"Using existing transcript: {transcript_path}")
-            return transcript_path
+            # Extract and normalize segments from existing transcript
+            segments = extract_segments(transcript_path)
+            if segments:
+                normalized_segments = normalize_segments(
+                    segments,
+                    min_duration=SEGMENT_MIN_DURATION,
+                    max_duration=SEGMENT_MAX_DURATION,
+                    target_duration=SEGMENT_TARGET_DURATION
+                )
+                # Write normalized segments back to file
+                if write_segments_to_srt(normalized_segments, transcript_path):
+                    return transcript_path, normalized_segments
+                else:
+                    logger.error("Failed to write normalized segments back to file")
+                    return None, None
+            return None, None
         
         # Create transcript directory if it doesn't exist
         os.makedirs(transcript_dir, exist_ok=True)
@@ -1275,27 +1556,28 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Sort segments by start time
         transcript_segments.sort(key=lambda x: x["start"])
         
-        # Write SRT file
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for i, segment in enumerate(transcript_segments, 1):
-                # Format timestamps
-                start = format_timestamp(segment["start"])
-                end = format_timestamp(segment["end"])
-                
-                # Write segment
-                f.write(f"{i}\n")
-                f.write(f"{start} --> {end}\n")
-                f.write(f"{segment['text']}\n\n")
+        # Normalize segments
+        normalized_segments = normalize_segments(
+            transcript_segments,
+            min_duration=SEGMENT_MIN_DURATION,
+            max_duration=SEGMENT_MAX_DURATION,
+            target_duration=SEGMENT_TARGET_DURATION
+        )
         
-        logger.info(f"Transcription completed: {transcript_path}")
-        logger.info(f"Total segments: {len(transcript_segments)}")
-        return transcript_path
+        # Write SRT file using normalized segments
+        if write_segments_to_srt(normalized_segments, transcript_path):
+            logger.info(f"Transcription completed: {transcript_path}")
+            logger.info(f"Total normalized segments: {len(normalized_segments)}")
+            return transcript_path, normalized_segments
+        else:
+            logger.error("Failed to write normalized segments to file")
+            return None, None
         
     except Exception as e:
         logger.error(f"Error during transcription: {str(e)}")
         logger.error(f"Error type: {type(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return None
+        return None, None
 
 def format_timestamp(seconds):
     """Format seconds into SRT timestamp format (HH:MM:SS,mmm)"""
@@ -1396,18 +1678,16 @@ def enhance_segments(segments, limit_to_one_minute=False):
                 return None
             
             # Validate segment has required fields
-            if not all(key in segment for key in ['text', 'timestamp']):
-                logger.warning(f"Skipping segment {i}/{total_segments} - missing required fields")
-                continue
-                
-            if not all(key in segment['timestamp'] for key in ['start', 'end']):
-                logger.warning(f"Skipping segment {i}/{total_segments} - missing timestamp fields")
+            required_fields = ['start', 'end', 'text']
+            missing_fields = [field for field in required_fields if field not in segment]
+            if missing_fields:
+                logger.warning(f"Skipping segment {i}/{total_segments} - missing required fields: {', '.join(missing_fields)}")
                 continue
             
             # Get segment text and timestamps
             text = segment['text']
-            start_time = parse_timestamp(segment['timestamp']['start'])
-            end_time = parse_timestamp(segment['timestamp']['end'])
+            start_time = segment['start']
+            end_time = segment['end']
             
             # Skip segments that start after the time limit
             if start_time >= time_limit:
@@ -1573,9 +1853,9 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
         else:
             logger.info("Processing full audio file without time limit")
         
-        # Step 1: Transcribe audio
+        # Step 1: Transcribe audio and get normalized segments
         logger.info("Starting audio transcription")
-        transcript_path = transcribe_audio(
+        transcript_path, normalized_segments = transcribe_audio(
             audio_path,
             force_transcription=False,
             transcript_dir=transcript_dir,
@@ -1584,25 +1864,16 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
             limit_to_one_minute=limit_to_one_minute
         )
         
-        if transcript_path is None:
+        if transcript_path is None or normalized_segments is None:
             logger.error("Transcription failed")
             return None
         
         logger.info(f"Transcription completed: {transcript_path}")
+        logger.info(f"Normalized segments: {len(normalized_segments)}")
         
-        # Step 2: Extract segments from transcript
-        logger.info("Extracting segments from transcript")
-        segments = extract_segments(transcript_path)
-        
-        if not segments:
-            logger.error("No segments extracted from transcript")
-            return None
-        
-        logger.info(f"Extracted {len(segments)} segments")
-        
-        # Step 3: Enhance segments with AI
+        # Step 2: Enhance segments with AI
         logger.info("Enhancing segments with AI")
-        enhanced_segments = enhance_segments(segments, limit_to_one_minute)
+        enhanced_segments = enhance_segments(normalized_segments, limit_to_one_minute)
         
         if not enhanced_segments:
             logger.error("Segment enhancement failed")
@@ -1610,7 +1881,7 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
         
         logger.info(f"Enhanced {len(enhanced_segments)} segments")
         
-        # Step 4: Generate visuals for segments
+        # Step 3: Generate visuals for segments
         logger.info("Generating visuals for segments")
         success = generate_visuals(
             enhanced_segments,
@@ -1624,7 +1895,7 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
         
         logger.info("Visual generation completed")
         
-        # Step 5: Create final video
+        # Step 4: Create final video
         logger.info("Creating final video")
         final_video_path = create_final_video(
             enhanced_segments,

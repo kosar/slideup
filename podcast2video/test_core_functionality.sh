@@ -76,8 +76,17 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         print_success "Homebrew is installed"
         
         # Update Homebrew itself
-        print_warning "Updating Homebrew..."
-        brew update &>/dev/null || true
+        echo -e "\nChecking Homebrew updates..."
+        if brew update > /tmp/brew_update.log 2>&1; then
+            if grep -q "Already up to date" /tmp/brew_update.log; then
+                print_success "Homebrew is up to date"
+            else
+                print_success "Homebrew updated successfully"
+            fi
+        else
+            print_warning "Homebrew update failed - check /tmp/brew_update.log for details"
+        fi
+        rm -f /tmp/brew_update.log
         
         # Check required Homebrew packages
         print_header "Checking Homebrew Packages"
