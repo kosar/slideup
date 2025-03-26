@@ -1,0 +1,55 @@
+{
+  "total_cost": 0.29000000000000004,
+  "start_time": "2025-03-26T01:20:27.402635",
+  "duration_seconds": 0.000397,
+  "api_breakdown": {
+    "openai": {
+      "chat": 0.06,
+      "transcription": 0.03
+    },
+    "stability": {
+      "image": 0.2
+    }
+  },
+  "entry_count": 3,
+  "entries": [
+    {
+      "api_type": "openai",
+      "operation": "chat",
+      "cost": 0.06,
+      "details": {
+        "model": "gpt-4",
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "input_cost": 0.03,
+        "output_cost": 0.03
+      },
+      "timestamp": "2025-03-26T01:20:27.402703"
+    },
+    {
+      "api_type": "openai",
+      "operation": "transcription",
+      "cost": 0.03,
+      "details": {
+        "model": "whisper-1",
+        "duration_seconds": 300,
+        "duration_minutes": 5.0
+      },
+      "timestamp": "2025-03-26T01:20:27.402735"
+    },
+    {
+      "api_type": "stability",
+      "operation": "image",
+      "cost": 0.2,
+      "details": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 30,
+        "samples": 1,
+        "base_cost": 0.2,
+        "steps_multiplier": 1.0
+      },
+      "timestamp": "2025-03-26T01:20:27.402754"
+    }
+  ]
+}

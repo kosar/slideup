@@ -1,93 +1,130 @@
 #!/bin/bash
-# Test script for podcast2video app
+# Test runner script for podcast2video
 
-set -e  # Exit on error
+# Set colors for terminal output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Check if running in automatic mode
-AUTO_YES=false
-if [ "$1" == "-y" ] || [ "$1" == "--yes" ]; then
-  AUTO_YES=true
-  echo "Running in non-interactive mode (auto-yes to all prompts)"
+# Store the script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Set up Python path
+export PYTHONPATH=$SCRIPT_DIR:$PYTHONPATH
+
+# Activate virtual environment if it exists
+if [ -d "venv" ]; then
+    echo -e "${YELLOW}Activating virtual environment...${NC}"
+    source venv/bin/activate
 fi
 
-# Ensure we're in the right directory
-cd "$(dirname "$0")"
+# Check Python environment
+echo -e "${YELLOW}Checking Python environment...${NC}"
+python -m check_environment
 
-# First, check the environment
-echo "==================================="
-echo "Checking environment..."
-echo "==================================="
-python3 check_environment.py
+# Function to run a test and check its exit code
+run_test() {
+    local test_name=$1
+    local test_command=$2
+    
+    echo -e "\n${YELLOW}Running $test_name...${NC}"
+    eval $test_command
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}$test_name PASSED${NC}"
+        return 0
+    else
+        echo -e "${RED}$test_name FAILED${NC}"
+        return 1
+    fi
+}
 
-# Ask if the user wants to continue after environment check
-if [ "$AUTO_YES" = true ]; then
-  response="y"
-  echo "Continue with tests? (y/n)"
-  echo "Auto-answer: $response"
+# Create a temp directory for test output
+TEST_TEMP_DIR="$SCRIPT_DIR/test_temp"
+mkdir -p "$TEST_TEMP_DIR"
+
+# Track test results
+PASSED=0
+FAILED=0
+TOTAL=0
+
+# Run unit tests for cost tracker module
+run_test "Cost Tracker Unit Tests" "python -m unittest discover -s . -p 'test_cost_tracker.py'"
+if [ $? -eq 0 ]; then
+    PASSED=$((PASSED+1))
 else
-  echo "Continue with tests? (y/n)"
-  read -r response
+    FAILED=$((FAILED+1))
 fi
+TOTAL=$((TOTAL+1))
 
-if [[ ! "$response" =~ ^[Yy]$ ]]; then
-  echo "Tests cancelled by user."
-  exit 0
-fi
-
-# Make sure our test audio exists
-if [ ! -f "test_resources/test_audio.wav" ]; then
-  echo "Test audio file not found. Creating..."
-  mkdir -p test_resources
-  ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 20 -c:a pcm_s16le -ar 44100 test_resources/test_audio.wav
-fi
-
-# Create test directories
-mkdir -p test_temp
-mkdir -p test_transcripts
-
-# Test 1: Just test transcription
-echo "==================================="
-echo "Running transcription test..."
-echo "==================================="
-python3 test_transcription.py
-
-# Ask if the user wants to continue with the full test
-if [ "$AUTO_YES" = true ]; then
-  response="y"
-  echo "Continue with full debug test? (y/n)"
-  echo "Auto-answer: $response"
+# Run end-to-end tests for cost tracker integration
+# Only run if API keys are available
+if [ -n "$OPENAI_API_KEY" ]; then
+    run_test "Cost Tracker E2E Tests" "python -m unittest discover -s . -p 'test_cost_tracker_e2e.py'"
+    if [ $? -eq 0 ]; then
+        PASSED=$((PASSED+1))
+    else
+        FAILED=$((FAILED+1))
+    fi
+    TOTAL=$((TOTAL+1))
 else
-  echo "Continue with full debug test? (y/n)"
-  read -r response
+    echo -e "${YELLOW}Skipping Cost Tracker E2E Tests - OPENAI_API_KEY not set${NC}"
 fi
 
-if [[ ! "$response" =~ ^[Yy]$ ]]; then
-  echo "Full test skipped by user."
+# Run transcription test
+if [ -f "$SCRIPT_DIR/test_resources/test_audio.mp3" ] && [ -n "$OPENAI_API_KEY" ]; then
+    run_test "Transcription Test" "python -m test_transcription"
+    if [ $? -eq 0 ]; then
+        PASSED=$((PASSED+1))
+    else
+        FAILED=$((FAILED+1))
+    fi
+    TOTAL=$((TOTAL+1))
 else
-  # Test 2: Run the full debug test
-  echo "==================================="
-  echo "Running full debug test..."
-  echo "==================================="
-  python3 test_debugging.py
+    echo -e "${YELLOW}Skipping Transcription Test - Missing test_audio.mp3 or OPENAI_API_KEY${NC}"
 fi
 
-# Cleanup
-if [ "$AUTO_YES" = true ]; then
-  response="y"
-  echo "Tests completed. Would you like to clean up temporary files? (y/n)"
-  echo "Auto-answer: $response"
+# Run debugging tests
+run_test "Debugging Features Test" "python -m test_debugging"
+if [ $? -eq 0 ]; then
+    PASSED=$((PASSED+1))
 else
-  echo "Tests completed. Would you like to clean up temporary files? (y/n)"
-  read -r response
+    FAILED=$((FAILED+1))
 fi
+TOTAL=$((TOTAL+1))
 
-if [[ "$response" =~ ^[Yy]$ ]]; then
-  echo "Cleaning up..."
-  rm -rf test_temp
-  rm -rf test_transcripts
-  echo "Cleanup completed."
+# Run core functionality test if all required API keys are available
+if [ -n "$OPENAI_API_KEY" ] && [ -n "$STABILITY_API_KEY" ]; then
+    run_test "Core Functionality Test" "bash test_core_functionality.sh"
+    if [ $? -eq 0 ]; then
+        PASSED=$((PASSED+1))
+    else
+        FAILED=$((FAILED+1))
+    fi
+    TOTAL=$((TOTAL+1))
 else
-  echo "Skipping cleanup. Temporary files remain in test_temp/ and test_transcripts/"
+    echo -e "${YELLOW}Skipping Core Functionality Test - Missing API keys${NC}"
+    echo -e "${YELLOW}Expected keys: OPENAI_API_KEY, STABILITY_API_KEY${NC}"
 fi
 
-echo "Test suite completed!" 
+# Display summary
+echo -e "\n${YELLOW}Test Summary${NC}"
+echo -e "Passed: ${GREEN}$PASSED${NC}"
+echo -e "Failed: ${RED}$FAILED${NC}"
+echo -e "Total: $TOTAL"
+
+# Clean up
+echo -e "\n${YELLOW}Cleaning up temporary files...${NC}"
+if [ -d "$TEST_TEMP_DIR" ]; then
+    rm -rf "$TEST_TEMP_DIR"
+fi
+
+# Return appropriate exit code
+if [ $FAILED -eq 0 ]; then
+    echo -e "${GREEN}All tests passed!${NC}"
+    exit 0
+else
+    echo -e "${RED}Some tests failed!${NC}"
+    exit 1
+fi 
