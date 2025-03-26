@@ -190,3 +190,4 @@ podcast2video/webapp/temp/
 podcast2video/webapp/uploads/
 podcast2video/webapp/transcripts/
 podcast2video/webapp/outputs/
+.openai*.env

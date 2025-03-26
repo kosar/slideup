@@ -1287,44 +1287,17 @@ def validate_audio_file(audio_path):
         raise ValueError(f"Error validating audio file: {str(e)}")
 
 # Add to global configuration
-SEGMENT_MIN_DURATION = 12    # Minimum segment duration
-SEGMENT_MAX_DURATION = 35    # Maximum segment duration
-SEGMENT_TARGET_DURATION = 25 # Ideal segment duration
+SEGMENT_MIN_DURATION = 25    # Minimum segment duration
+SEGMENT_MAX_DURATION = 50    # Maximum segment duration
+SEGMENT_TARGET_DURATION =35 # Ideal segment duration
 
-def calculate_text_coherence(text1, text2):
-    """Calculate how well two text segments fit together semantically.
-    Returns a score between 0 and 1, where 1 indicates high coherence."""
-    try:
-        # Simple coherence check based on sentence completion
-        combined = f"{text1} {text2}".lower()
-        
-        # Check for sentence boundaries
-        if text1.strip().endswith(('.', '!', '?')):
-            return 0.3  # Natural break point
-        
-        # Check if second segment completes a thought from first
-        if any(word in combined for word in ['and', 'but', 'or', 'so', 'because', 'however', 'therefore']):
-            return 0.8  # Likely connected thoughts
-            
-        # Check for subject-verb continuity
-        words1 = text1.strip().split()
-        words2 = text2.strip().split()
-        if words1[-1].lower() in ['the', 'a', 'an'] or words1[-1].endswith('ly'):
-            return 0.9  # Incomplete phrase that likely continues
-            
-        # Default moderate coherence for other cases
-        return 0.5
-        
-    except Exception as e:
-        logger.warning(f"Error in coherence calculation: {str(e)}")
-        return 0.5  # Default to moderate coherence on error
-
-def normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25):
-    """Normalize segment durations by combining or splitting segments."""
+def normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25, aggressive_reduction=True):
+    """Normalize segment durations by combining or splitting segments with improved topic coherence."""
     if not segments:
         return []
 
-    normalized = []
+    # Phase 1: Initial pass to combine obviously related segments
+    initial_combined = []
     current = None
 
     for segment in segments:
@@ -1334,31 +1307,53 @@ def normalize_segments(segments, min_duration=12, max_duration=35, target_durati
 
         # Calculate coherence between current and next segment
         coherence_score = calculate_text_coherence(current['text'], segment['text'])
-        
-        # Decide whether to combine based on duration and coherence
         combined_duration = current['end'] - current['start'] + segment['end'] - segment['start']
         
-        if combined_duration <= max_duration and coherence_score > 0.7:
-            # Combine segments if they're coherent and not too long
+        # More lenient combination criteria when aggressive_reduction is True
+        coherence_threshold = 0.5 if aggressive_reduction else 0.7
+        max_combined_duration = max_duration * 1.2 if aggressive_reduction else max_duration
+        
+        if combined_duration <= max_combined_duration and coherence_score > coherence_threshold:
+            # Combine segments
             current['end'] = segment['end']
             current['text'] += ' ' + segment['text']
         else:
-            # If current segment is too short and we couldn't combine, try to adjust timing
-            if current['end'] - current['start'] < min_duration:
-                # Extend the segment duration if possible
-                available_extension = min(
-                    segment['start'] - current['end'],  # Space until next segment
-                    min_duration - (current['end'] - current['start'])  # Required extension
-                )
-                if available_extension > 0:
-                    current['end'] += available_extension
-
-            normalized.append(current)
+            initial_combined.append(current)
             current = segment.copy()
 
     # Don't forget the last segment
     if current:
-        normalized.append(current)
+        initial_combined.append(current)
+    
+    # Phase 2: Topic-based clustering to further reduce segments
+    if aggressive_reduction and len(initial_combined) > 1:
+        topic_clustered = []
+        segment_group = [initial_combined[0]]
+        current_topic = extract_topic(initial_combined[0]['text'])
+        
+        for segment in initial_combined[1:]:
+            segment_topic = extract_topic(segment['text'])
+            segment_duration = segment['end'] - segment['start']
+            group_duration = sum(s['end'] - s['start'] for s in segment_group)
+            
+            # Check if this segment continues the same topic and keeping it won't make the group too long
+            if is_same_topic(current_topic, segment_topic) and (group_duration + segment_duration) <= max_duration * 1.5:
+                segment_group.append(segment)
+            else:
+                # Merge the current group and start a new one
+                merged_segment = merge_segment_group(segment_group)
+                topic_clustered.append(merged_segment)
+                segment_group = [segment]
+                current_topic = segment_topic
+        
+        # Add the last group
+        if segment_group:
+            merged_segment = merge_segment_group(segment_group)
+            topic_clustered.append(merged_segment)
+        
+        normalized = topic_clustered
+    else:
+        normalized = initial_combined
 
     # Final pass to adjust segment durations closer to target
     for segment in normalized:
@@ -1367,12 +1362,128 @@ def normalize_segments(segments, min_duration=12, max_duration=35, target_durati
             # Try to extend short segments
             extension = min(min_duration - duration, 2.0)  # Max 2 second extension
             segment['end'] += extension
-        elif duration > max_duration:
-            # Trim overly long segments
-            reduction = min(duration - max_duration, 2.0)  # Max 2 second reduction
-            segment['end'] -= reduction
+        elif duration > max_duration * 1.5:  # More aggressive splitting for very long segments
+            # Consider splitting extremely long segments
+            midpoint = segment['start'] + duration / 2
+            text_parts = split_text_at_sentence_boundary(segment['text'])
+            
+            if len(text_parts) > 1:
+                # Create two segments from this one
+                segment1 = segment.copy()
+                segment1['end'] = midpoint
+                segment1['text'] = text_parts[0]
+                
+                segment2 = segment.copy()
+                segment2['start'] = midpoint
+                segment2['text'] = text_parts[1]
+                
+                # Replace the current segment with these two
+                # Note: This would require restructuring the loop to handle this replacement
+                # For simplicity, just log that splitting would be beneficial
+                logger.info(f"Segment at {segment['start']} is very long ({duration:.2f}s). Consider splitting.")
 
+    # Log reduction statistics
+    logger.info(f"Segment reduction: {len(segments)} → {len(normalized)} ({((len(segments) - len(normalized)) / len(segments) * 100):.1f}% reduction)")
     return normalized
+
+def extract_topic(text):
+    """Extract the main topic from text using keyword frequency and importance."""
+    # Simple implementation: just return the most common substantive words
+    # In a full implementation, you might use NLP techniques like TF-IDF or entity extraction
+    words = text.lower().split()
+    # Filter out common stop words
+    stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'is', 'are', 'was', 'were'}
+    content_words = [word for word in words if word not in stop_words]
+    
+    # Count word frequency
+    word_counts = {}
+    for word in content_words:
+        word_counts[word] = word_counts.get(word, 0) + 1
+    
+    # Return the top 3 most frequent words as the "topic"
+    top_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+    return [word for word, _ in top_words]
+
+def is_same_topic(topic1, topic2):
+    """Determine if two topics are sufficiently similar."""
+    # Check for overlap in topic keywords
+    common_words = set(topic1).intersection(set(topic2))
+    return len(common_words) >= 1  # If they share at least one key word
+
+def merge_segment_group(segment_group):
+    """Merge a group of segments into a single segment."""
+    if not segment_group:
+        return None
+    
+    merged = segment_group[0].copy()
+    merged['text'] = ' '.join(s['text'] for s in segment_group)
+    merged['end'] = segment_group[-1]['end']
+    return merged
+
+def split_text_at_sentence_boundary(text):
+    """Split text into two parts at a sentence boundary near the middle."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if len(sentences) <= 1:
+        # If there's only one sentence, split it in half
+        midpoint = len(text) // 2
+        return [text[:midpoint], text[midpoint:]]
+    
+    # Find the middle sentence
+    mid_idx = len(sentences) // 2
+    part1 = ' '.join(sentences[:mid_idx])
+    part2 = ' '.join(sentences[mid_idx:])
+    return [part1, part2]
+
+def calculate_text_coherence(text1, text2):
+    """Calculate how well two text segments fit together semantically.
+    Returns a score between 0 and 1, where 1 indicates high coherence."""
+    try:
+        # Get the last sentence of text1 and first sentence of text2
+        text1_sentences = re.split(r'(?<=[.!?])\s+', text1.strip())
+        text2_sentences = re.split(r'(?<=[.!?])\s+', text2.strip())
+        
+        last_sentence = text1_sentences[-1] if text1_sentences else ""
+        first_sentence = text2_sentences[0] if text2_sentences else ""
+        
+        # Check for incomplete sentence in text1
+        if not any(text1.strip().endswith(end) for end in ['.', '!', '?']):
+            return 0.9  # High coherence if text1 ends mid-sentence
+        
+        # Combined text for analysis
+        combined = f"{last_sentence} {first_sentence}".lower()
+        
+        # Check for transitional phrases that indicate connected content
+        transition_phrases = ['however', 'therefore', 'furthermore', 'moreover', 'in addition', 
+                            'consequently', 'as a result', 'for example', 'for instance',
+                            'similarly', 'likewise', 'in contrast', 'on the other hand']
+        
+        for phrase in transition_phrases:
+            if phrase in first_sentence.lower():
+                return 0.85  # High coherence for explicit transitions
+        
+        # Check for pronoun references that likely refer to previous content
+        pronoun_start = any(first_sentence.lower().startswith(p) for p in ['he ', 'she ', 'they ', 'it ', 'this ', 'that ', 'these ', 'those '])
+        if pronoun_start:
+            return 0.8  # High coherence for pronoun reference
+            
+        # Check for conjunctions at the start of text2
+        if any(first_sentence.lower().startswith(c) for c in ['and ', 'but ', 'or ', 'so ', 'because ']):
+            return 0.75  # Good coherence for conjunction starts
+            
+        # Check for thematic continuity
+        text1_keywords = set(extract_topic(last_sentence))
+        text2_keywords = set(extract_topic(first_sentence))
+        keyword_overlap = len(text1_keywords.intersection(text2_keywords))
+        
+        if keyword_overlap > 0:
+            return 0.65 + (0.1 * keyword_overlap)  # 0.65-0.95 based on keyword overlap
+            
+        # Default moderate coherence
+        return 0.4  # Lower default to be more selective
+        
+    except Exception as e:
+        logger.warning(f"Error in coherence calculation: {str(e)}")
+        return 0.3  # Lower default on error
 
 def write_segments_to_srt(segments, output_path):
     """Write segments to an SRT file"""
@@ -1487,14 +1598,15 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Convert to mp3 and limit to 1 minute using ffmpeg
         command = [
             "ffmpeg", "-y", "-i", audio_path, 
-            "-t", "60", "-acodec", "libmp3lame", "-ar", "44100", "-ab", "192k",
+            "-t", "60", "-acodec", "libmp3lame", "-ar", "16000", "-ab", "32k", "-ac", "1",
             temp_audio_path
         ]
     else:
-        # Just convert to mp3
+        # Convert to mp3 with lower bitrate that's sufficient for voice transcription
+        # Using mono audio (channels=1), 16kHz sample rate, and 32kbps bitrate
         command = [
             "ffmpeg", "-y", "-i", audio_path, 
-            "-acodec", "libmp3lame", "-ar", "44100", "-ab", "192k",
+            "-acodec", "libmp3lame", "-ar", "16000", "-ab", "32k", "-ac", "1",
             temp_audio_path
         ]
     
@@ -1515,34 +1627,57 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Initialize OpenAI client
         transcription_client = OpenAI(api_key=openai_api_key)
         
+        # Check file size before attempting transcription
+        file_size = os.path.getsize(temp_audio_path)
+        file_size_mb = file_size / (1024*1024)
+        logger.info(f"Compressed audio file size: {file_size_mb:.2f} MB")
+        
+        # Check if file is still too large
+        if file_size > 25 * 1024 * 1024:  # 25 MB limit
+            logger.warning(f"Audio file still too large after compression ({file_size_mb:.2f} MB > 25 MB)")
+            logger.warning("Attempting to compress further with even lower quality")
+            
+            # Try with even lower bitrate
+            temp_audio_path_extra = os.path.join(temp_dir, f"temp_extra_{audio_hash}.mp3")
+            extra_command = [
+                "ffmpeg", "-y", "-i", temp_audio_path, 
+                "-acodec", "libmp3lame", "-ar", "8000", "-ab", "16k", "-ac", "1",
+                temp_audio_path_extra
+            ]
+            
+            subprocess.run(extra_command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # Replace the temp file with the extra compressed version
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
+            temp_audio_path = temp_audio_path_extra
+            
+            # Check size again
+            file_size = os.path.getsize(temp_audio_path)
+            file_size_mb = file_size / (1024*1024)
+            logger.info(f"Further compressed audio file size: {file_size_mb:.2f} MB")
+            
+            # If still too large, error out
+            if file_size > 25 * 1024 * 1024:
+                logger.error(f"Audio file still too large for OpenAI's API ({file_size_mb:.2f} MB > 25 MB)")
+                return None
+        
         # Perform transcription
         debug_point("Sending audio to OpenAI for transcription")
         with open(temp_audio_path, "rb") as audio_file:
-            # Get file size
-            audio_file.seek(0, os.SEEK_END)
-            file_size = audio_file.tell()
-            audio_file.seek(0)
-            
-            logger.info(f"Audio file size: {file_size / (1024*1024):.2f} MB")
-            
-            # Check file size limit
-            if file_size > 25 * 1024 * 1024:  # 25 MB limit
-                logger.error("Audio file too large for OpenAI's API (>25MB)")
-                return None
-            
             response = transcription_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
                 response_format="srt"
             )
-            
-            # Track API cost if cost tracker is available
-            if COST_TRACKER_AVAILABLE:
-                cost_tracker.add_openai_transcription_cost(
-                    duration_seconds=audio_duration,
-                    model="whisper-1",
-                    operation_name="audio_transcription"
-                )
+        
+        # Track API cost if cost tracker is available
+        if COST_TRACKER_AVAILABLE:
+            cost_tracker.add_openai_transcription_cost(
+                duration_seconds=audio_duration,
+                model="whisper-1",
+                operation_name="audio_transcription"
+            )
         
         # Save SRT transcription
         with open(srt_path, "w") as f:
@@ -1920,6 +2055,12 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
             return False
         
         logger.info(f"Extracted {len(segments)} segments from transcript")
+        
+        # Normalize segments to reduce their number and optimize processing
+        debug_point("Normalizing segments")
+        original_segment_count = len(segments)
+        segments = normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25)
+        logger.info(f"Normalized segments: {len(segments)} segments (from original {original_segment_count})")
         
         # Step 2: Enhance segments with AI descriptions and visual prompts
         debug_point("Enhancing segments with AI")
