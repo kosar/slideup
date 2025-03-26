@@ -59,7 +59,7 @@ except ImportError as e:
     MOVIEPY_AVAILABLE = False
 
 # Global configuration
-TIME_LIMIT_SECONDS = 60  # 6 minutes
+TIME_LIMIT_SECONDS = 180  # 3 minutes
 TIME_LIMIT_MS = int(TIME_LIMIT_SECONDS * 1000)  # Convert to milliseconds
 
 # Create a separate logger for HTTP requests with reduced verbosity
@@ -386,7 +386,8 @@ def main():
     parser = argparse.ArgumentParser(description='Convert podcast audio to video with AI-generated visuals')
     parser.add_argument('--audio', type=str, required=True, help='Path to input audio file')
     parser.add_argument('--output', type=str, default='enhanced_podcast.mp4', help='Path to output video file')
-    parser.add_argument('--limit_to_one_minute', action='store_true', help='Limit processing to first minute of audio')
+    parser.add_argument('--limit_to_one_minute', action='store_true', 
+                       help=f'Limit processing to first {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) of audio')
     parser.add_argument('--non_interactive', action='store_true', help='Run in non-interactive mode')
     parser.add_argument('--test_openai', action='store_true', help='Test OpenAI API connectivity')
     parser.add_argument('--test_stability', action='store_true', help='Test Stability API connectivity')
@@ -1037,7 +1038,10 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
         
         # Calculate target duration based on segments and time limit
         if limit_to_one_minute:
-            target_duration = min(max(get_end_time(segment) for segment in enhanced_segments), TIME_LIMIT_SECONDS)
+            logger.info(f"Applying time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
+            full_duration = max(get_end_time(segment) for segment in enhanced_segments)
+            target_duration = min(full_duration, TIME_LIMIT_SECONDS)
+            logger.info(f"Original full duration: {full_duration:.2f} seconds")
             logger.info(f"Using time-limited duration: {target_duration:.2f} seconds")
         else:
             target_duration = max(get_end_time(segment) for segment in enhanced_segments)
@@ -1052,12 +1056,15 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
             
             # Skip segments that start after the time limit if limit_to_one_minute is True
             if limit_to_one_minute and start_time >= TIME_LIMIT_SECONDS:
-                logger.info(f"Skipping segment {i} as it starts after time limit")
+                logger.info(f"Skipping segment {i} as it starts after time limit of {TIME_LIMIT_SECONDS} seconds")
                 continue
                 
             # Adjust end time if it exceeds the limit and limit_to_one_minute is True
+            original_end_time = end_time
             if limit_to_one_minute:
                 end_time = min(end_time, TIME_LIMIT_SECONDS)
+                if end_time < original_end_time:
+                    logger.info(f"Trimming segment {i} end time from {original_end_time:.2f} to {end_time:.2f} seconds to match time limit")
             
             segment_duration = end_time - start_time
             
@@ -1626,13 +1633,14 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
     temp_audio_path = os.path.join(temp_dir, f"temp_{audio_hash}.mp3")
     
     if limit_to_one_minute:
-        debug_point("Limiting audio to one minute for testing")
-        # Convert to mp3 and limit to 1 minute using ffmpeg
+        debug_point(f"Limiting audio to {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) for testing")
+        # Convert to mp3 and limit using ffmpeg
         command = [
             "ffmpeg", "-y", "-i", audio_path, 
-            "-t", "60", "-acodec", "libmp3lame", "-ar", "16000", "-ab", "32k", "-ac", "1",
+            "-t", str(TIME_LIMIT_SECONDS), "-acodec", "libmp3lame", "-ar", "16000", "-ab", "32k", "-ac", "1",
             temp_audio_path
         ]
+        logger.info(f"Using time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
     else:
         # Convert to mp3 with lower bitrate that's sufficient for voice transcription
         # Using mono audio (channels=1), 16kHz sample rate, and 32kbps bitrate
@@ -1823,13 +1831,20 @@ def extract_segments(transcript_path):
             
             segments.append(current_segment)
         
-        # Log the number of segments found
+        # Log extracted segments (summary only, not each one)
         logger.info(f"Extracted {len(segments)} segments from transcript")
         
-        # Log duration info for debugging
+        # Check segments and calculate stats
+        total_duration = 0
         for i, segment in enumerate(segments):
             duration = segment['end'] - segment['start']
-            logger.info(f"Segment {i+1}: start={segment['start']:.2f}, end={segment['end']:.2f}, duration={duration:.2f}s")
+            total_duration += duration
+            
+            # Only log unusually long segments as a warning
+            if duration > 20:
+                logger.info(f"Segment {i+1} is unusually long: {duration:.2f}s")
+        
+        logger.info(f"Total segments duration: {total_duration:.2f} seconds")
         
         return segments
         
@@ -1866,8 +1881,28 @@ def enhance_segments(segments, limit_to_one_minute=False):
     
     # Limit the number of segments for testing
     if limit_to_one_minute:
-        logger.info(f"Limiting to first 3 segments for one-minute testing")
-        segments = segments[:3]
+        # Find segments that would fit within the time limit
+        limited_segments = []
+        total_duration = 0
+        for segment in segments:
+            segment_duration = segment['end'] - segment['start']
+            if segment['start'] >= TIME_LIMIT_SECONDS:
+                # Skip segments that start after the time limit
+                break
+            
+            # Add this segment (potentially with trimmed end time)
+            segment_end = min(segment['end'], TIME_LIMIT_SECONDS)
+            adjusted_duration = segment_end - segment['start']
+            if adjusted_duration > 0:
+                limited_segments.append(segment)
+                total_duration += adjusted_duration
+                if segment_end >= TIME_LIMIT_SECONDS:
+                    # We've reached the time limit
+                    break
+        
+        logger.info(f"Limiting to {len(limited_segments)} segments to fit TIME_LIMIT_SECONDS={TIME_LIMIT_SECONDS}")
+        logger.info(f"Limited segments cover approximately {total_duration:.2f} seconds")
+        segments = limited_segments
     
     # Check if we have a valid chat model
     global chat_model
@@ -2036,6 +2071,12 @@ def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
 def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_interactive=False):
     """Process audio file to create a video with AI-generated visuals"""
     debug_point(f"Processing audio file: {audio_path}")
+    
+    # Show time limit information if enabled
+    if limit_to_one_minute:
+        logger.info(f"Time limit mode is enabled. Using TIME_LIMIT_SECONDS={TIME_LIMIT_SECONDS} ({TIME_LIMIT_SECONDS/60:.1f} minutes)")
+    else:
+        logger.info("Time limit mode is disabled. Processing full audio.")
     
     # Check that the audio file exists
     if not os.path.exists(audio_path):
@@ -2251,7 +2292,8 @@ if __name__ == "__main__":
         parser.add_argument("--transcript_dir", default="transcripts", help="Directory for storing transcripts")
         parser.add_argument("--transcribe_only", action="store_true", help="Only transcribe the audio, don't process further")
         parser.add_argument("--force_transcription", action="store_true", help="Force transcription even if transcript exists")
-        parser.add_argument("--limit_to_one_minute", action="store_true", help="Limit processing to first minute of audio")
+        parser.add_argument("--limit_to_one_minute", action="store_true", 
+                           help=f'Limit processing to first {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) of audio')
         parser.add_argument("--non_interactive", action="store_true", help="Run in non-interactive mode")
         parser.add_argument("--test_openai", action="store_true", help="Test OpenAI API connectivity")
         parser.add_argument("--test_stability", action="store_true", help="Test Stability API connectivity")

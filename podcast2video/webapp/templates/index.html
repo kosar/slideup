@@ -55,9 +55,9 @@
                                                 <div class="form-check">
                                                     <input class="form-check-input" type="checkbox" name="limit_to_one_minute" id="limit_to_one_minute">
                                                     <label class="form-check-label" for="limit_to_one_minute">
-                                                        Limit processing to one minute
+                                                        Limit processing to <span id="time-limit-value">one minute</span>
                                                         <small class="form-text text-muted d-block">
-                                                            This option limits processing to the first minute of audio, which is useful for testing.
+                                                            This option limits processing to the first <span id="time-limit-value2">minute</span> of audio, which is useful for testing.
                                                         </small>
                                                     </label>
                                                 </div>
@@ -87,5 +87,28 @@
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+    <script>
+        // Fetch the time limit from the API
+        fetch('/api/time_limit')
+            .then(response => response.json())
+            .then(data => {
+                // Format the time for display
+                let timeDisplay;
+                if (data.minutes === 1) {
+                    timeDisplay = "one minute";
+                } else if (data.minutes < 1) {
+                    timeDisplay = `${data.seconds} seconds`;
+                } else {
+                    timeDisplay = `${data.minutes} minutes`;
+                }
+                
+                // Update the display in both places
+                document.getElementById('time-limit-value').textContent = timeDisplay;
+                document.getElementById('time-limit-value2').textContent = data.minutes === 1 ? "minute" : `${timeDisplay}`;
+            })
+            .catch(error => {
+                console.error('Error fetching time limit:', error);
+            });
+    </script>
 </body>
 </html> 

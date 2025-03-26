@@ -766,6 +766,39 @@ def api_cancel_task(task_id):
             
         return jsonify({'status': 'error', 'message': 'Server error while cancelling task'}), 500
 
+@app.route('/api/time_limit')
+def get_time_limit():
+    """Get the time limit in minutes from the podcast-to-video.py file"""
+    try:
+        # Path to the podcast-to-video.py script
+        script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "podcast-to-video.py")
+        
+        # Use grep to extract the TIME_LIMIT_SECONDS constant
+        result = subprocess.run(
+            ['grep', '-A', '1', 'TIME_LIMIT_SECONDS', script_path],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Error reading time limit from podcast-to-video.py: {result.stderr}")
+            return jsonify({"minutes": 1, "seconds": 60})
+        
+        # Extract the time limit value using regex
+        import re
+        match = re.search(r'TIME_LIMIT_SECONDS\s*=\s*(\d+)', result.stdout)
+        if match:
+            seconds = int(match.group(1))
+            minutes = seconds / 60
+            return jsonify({"minutes": minutes, "seconds": seconds})
+        else:
+            logger.error(f"Could not find TIME_LIMIT_SECONDS in: {result.stdout}")
+            return jsonify({"minutes": 1, "seconds": 60})
+    
+    except Exception as e:
+        logger.error(f"Error getting time limit: {str(e)}")
+        return jsonify({"minutes": 1, "seconds": 60})
+
 # Note: We're using subprocess to call the original podcast-to-video.py script
 # rather than importing its components directly to avoid dependency issues with MoviePy
 
