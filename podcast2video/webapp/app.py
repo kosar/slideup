@@ -67,13 +67,14 @@ Your task is to analyze this podcast segment and provide a JSON response with th
 
 {
     "description": "A clear, concise description of the main topic",
-    "visual_prompt": "A detailed visual prompt for generating an image that represents this content",
-    "key_points": ["Key point 1", "Key point 2", "Key point 3"]
+    "visual_prompt": "A detailed visual prompt for generating an image that represents this content, with an eye towards interesting facts and specifics from the content with key points identified (as many as you see fit).",
+    "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point N"],
+    "epoch_time": "A description of the period in time and approximate location down to the continent level to help set the period for context and will be used by downstream processors."
 }
 
 The visual prompt should be detailed and specific, focusing on visual elements that would make a compelling image. 
-Include details like style, composition, colors, and elements to include in the image.""",
-    'visual_generation': "A high quality, detailed image of the following scene: "
+Include details like style, composition, colors, and elements to include in the image. Be sure to include a time period for which the image should be set, so it is logically aligned with the topic and the period in time that the topic is set in as appropriate and possible to discern from this content. If there are hints you can provide that further sets the tone and mood of the setting that helps the image creation be true to the intention of the discussion so it feels natural to the viewer.""",
+    'visual_generation': "A high quality, detailed image that uses creative imagery that is highly realistic especially when it comes to humans, being sure the human depictions are true to the natural human form and being very careful to depict imagery set in a specific time period that is aligned with the description below so it fits together naturally between the narrative and the visual imagery, of the following scene: "
 }
 
 # Background processes tracking
