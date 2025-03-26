@@ -80,6 +80,20 @@ Include details like style, composition, colors, and elements to include in the 
 processing_tasks = {}
 processing_processes = {}  # Track actual subprocess handles
 
+# Default cost tracking structure
+DEFAULT_COST_DATA = {
+    'total_cost': 0.0,
+    'api_breakdown': {
+        'openai': {
+            'chat': 0.0,
+            'transcription': 0.0
+        },
+        'stability': {
+            'image': 0.0
+        }
+    }
+}
+
 # Add datetime filter for templates
 @app.template_filter('datetime')
 def format_datetime(value):
@@ -122,7 +136,8 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
             'message': 'Initializing processing',
             'logs': [],
             'start_time': time.time(),
-            'output_file': None
+            'output_file': None,
+            'cost_data': DEFAULT_COST_DATA.copy()  # Initialize with default cost data
         }
         
         # Set up directory paths
@@ -174,6 +189,17 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
                 output = output.strip()
                 logger.info(f"Process output: {output}")
                 
+                # Check for cost tracking information in output
+                if "COST_DATA:" in output:
+                    try:
+                        # Extract cost data JSON
+                        cost_json = output.split("COST_DATA:", 1)[1].strip()
+                        cost_data = json.loads(cost_json)
+                        processing_tasks[task_id]['cost_data'] = cost_data
+                        logger.info(f"Updated cost data: ${cost_data['total_cost']:.4f} total")
+                    except Exception as e:
+                        logger.error(f"Error parsing cost data: {str(e)}")
+                
                 # Update status based on output
                 if "Starting audio transcription" in output:
                     processing_tasks[task_id].update({
@@ -209,9 +235,26 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
         if task_id in processing_tasks and processing_tasks[task_id].get('status') in ['cancelled', 'cancelling']:
             logger.info(f"Task {task_id} was cancelled - not checking for output file")
             return
-            
-        # Only check for successful completion if not cancelled
-        if return_code == 0:
+        
+        # Get error output in case we need it
+        error_output = process.stderr.read()
+        
+        # Check for specific error messages in logs that indicate failure
+        error_message = None
+        for log in processing_tasks[task_id]['logs']:
+            if "ERROR - Error during transcription:" in log:
+                error_parts = log.split("ERROR - Error during transcription:", 1)
+                if len(error_parts) > 1:
+                    error_message = f"Transcription error: {error_parts[1].strip()}"
+                    break
+            elif "ERROR -" in log:
+                error_parts = log.split("ERROR -", 1)
+                if len(error_parts) > 1:
+                    error_message = error_parts[1].strip()
+                    break
+                
+        # Only check for successful completion if not cancelled and no error found
+        if return_code == 0 and not error_message:
             # Check if output file exists
             if os.path.exists(output_file):
                 processing_tasks[task_id].update({
@@ -222,11 +265,20 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
                     'end_time': time.time()
                 })
             else:
-                raise FileNotFoundError(f"Output file not found at {output_file}")
-        else:
-            # Get error output
-            error_output = process.stderr.read()
-            raise Exception(f"Process failed with return code {return_code}: {error_output}")
+                # Output file doesn't exist despite return code 0
+                # This could happen if the process exits normally but fails to produce output
+                error_message = f"Output file not found: {os.path.basename(output_file)}"
+        
+        # If we have an error, either from logs or missing output file
+        if error_message or return_code != 0:
+            processing_tasks[task_id].update({
+                'status': 'failed',
+                'progress': 0,
+                'message': error_message or f"Process failed with return code {return_code}: {error_output}",
+                'end_time': time.time()
+            })
+            logger.error(f"Processing failed: {processing_tasks[task_id]['message']}")
+            # Note: We don't raise an exception here anymore, to keep the cost data
             
     except FileNotFoundError as e:
         # Special handling for file not found - check if cancelled first
@@ -234,28 +286,26 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
             logger.info(f"Ignoring FileNotFoundError for cancelled task {task_id}")
             return
         
-        # If not cancelled, log the error and update status
+        # If not cancelled and not already failed, log the error and update status
         logger.error(f"Error in background processing: {str(e)}")
-        if task_id in processing_tasks and processing_tasks[task_id].get('status') != 'cancelled':
+        if task_id in processing_tasks and processing_tasks[task_id].get('status') not in ['cancelled', 'failed']:
             processing_tasks[task_id].update({
                 'status': 'failed',
                 'progress': 0,
                 'message': f'Processing failed: {str(e)}',
                 'end_time': time.time()
             })
-        raise
             
     except Exception as e:
         logger.error(f"Error in background processing: {str(e)}")
-        # Check if the task was cancelled before setting failed status
-        if task_id in processing_tasks and processing_tasks[task_id].get('status') != 'cancelled':
+        # Check if the task was cancelled or already failed before setting failed status
+        if task_id in processing_tasks and processing_tasks[task_id].get('status') not in ['cancelled', 'failed']:
             processing_tasks[task_id].update({
                 'status': 'failed',
                 'progress': 0,
                 'message': f'Processing failed: {str(e)}',
                 'end_time': time.time()
             })
-        raise
     finally:
         # Remove process from tracking dict when done
         if task_id in processing_processes:
@@ -500,7 +550,8 @@ def api_status(task_id):
         'message': task_status.get('message', ''),
         'logs': task_status.get('logs', []),
         'start_time': task_status.get('start_time'),
-        'output_file': task_status.get('output_file')
+        'output_file': task_status.get('output_file'),
+        'cost_data': task_status.get('cost_data', DEFAULT_COST_DATA.copy())
     }
     
     return jsonify(response_data)

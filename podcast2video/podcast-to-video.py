@@ -29,9 +29,11 @@ try:
     from podcast2video.cost_tracker import get_cost_tracker
     COST_TRACKER_AVAILABLE = True
     cost_tracker = get_cost_tracker()
+    # Reset cost tracker at startup
+    cost_tracker.reset()
 except ImportError:
     COST_TRACKER_AVAILABLE = False
-    logger.warning("Cost tracker module not available. API costs will not be tracked.")
+    print("Cost tracker module not available. API costs will not be tracked.")
 
 # Set up logging first
 logging.basicConfig(
@@ -157,6 +159,15 @@ def start_progress_monitoring(interval=5):
         while True:
             time.sleep(interval)
             current_time = time.time()
+            
+            # Report cost data periodically for the webapp
+            if COST_TRACKER_AVAILABLE:
+                try:
+                    cost_summary = cost_tracker.get_summary()
+                    cost_json = json.dumps(cost_summary)
+                    print(f"COST_DATA: {cost_json}")
+                except Exception as e:
+                    logger.error(f"Error reporting cost data: {str(e)}")
             
             # Check if we have an active task
             if current_operation and task_start_time:
@@ -329,9 +340,37 @@ def setup_signal_handling():
     logger.info("Signal handlers registered")
 
 def cleanup():
-    """Clean up resources before exiting."""
-    logger.info("Cleaning up resources")
-    # Add any cleanup code here (temp files, etc.)
+    """Cleanup operations to perform when exiting"""
+    global temp_files
+    
+    # Generate and output final cost report
+    if COST_TRACKER_AVAILABLE:
+        try:
+            cost_summary = cost_tracker.get_summary()
+            logger.info(f"Final cost summary: ${cost_summary['total_cost']:.4f} total")
+            logger.info(f"API breakdown: OpenAI chat=${cost_summary['api_breakdown']['openai']['chat']:.4f}, " +
+                       f"transcription=${cost_summary['api_breakdown']['openai']['transcription']:.4f}, " +
+                       f"Stability image=${cost_summary['api_breakdown']['stability']['image']:.4f}")
+            
+            # Save detailed report
+            report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost_report.json")
+            cost_tracker.save_report(report_path)
+            logger.info(f"Detailed cost report saved to {report_path}")
+            
+            # Print cost data in format for webapp to parse
+            cost_json = json.dumps(cost_summary)
+            print(f"COST_DATA: {cost_json}")
+        except Exception as e:
+            logger.error(f"Error generating cost report: {str(e)}")
+    
+    # Cleanup temp files
+    for temp_file in temp_files:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                logger.debug(f"Removed temp file: {temp_file}")
+        except Exception as e:
+            logger.warning(f"Failed to remove temp file {temp_file}: {str(e)}")
 
 def main():
     """Main entry point for the podcast-to-video application"""
@@ -960,25 +999,35 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
         logger.info("Starting final video creation")
         logger.info(f"Number of segments to process: {len(enhanced_segments)}")
         
+        # Get start/end times with fallback between different naming conventions
+        get_start_time = lambda segment: segment.get('start_time', segment.get('start', 0))
+        get_end_time = lambda segment: segment.get('end_time', segment.get('end', 0))
+        
         # Calculate target duration based on segments and time limit
         if limit_to_one_minute:
-            target_duration = min(max(segment["end"] for segment in enhanced_segments), TIME_LIMIT_SECONDS)
+            target_duration = min(max(get_end_time(segment) for segment in enhanced_segments), TIME_LIMIT_SECONDS)
             logger.info(f"Using time-limited duration: {target_duration:.2f} seconds")
         else:
-            target_duration = max(segment["end"] for segment in enhanced_segments)
+            target_duration = max(get_end_time(segment) for segment in enhanced_segments)
             logger.info(f"Using full duration: {target_duration:.2f} seconds")
         
         # First, create video segments from PNG files
         valid_segments = []
         for i, segment in enumerate(enhanced_segments, 1):
+            # Get start/end times with fallback
+            start_time = get_start_time(segment)
+            end_time = get_end_time(segment)
+            
             # Skip segments that start after the time limit if limit_to_one_minute is True
-            if limit_to_one_minute and segment["start"] >= TIME_LIMIT_SECONDS:
+            if limit_to_one_minute and start_time >= TIME_LIMIT_SECONDS:
                 logger.info(f"Skipping segment {i} as it starts after time limit")
                 continue
                 
             # Adjust end time if it exceeds the limit and limit_to_one_minute is True
-            end_time = min(segment["end"], TIME_LIMIT_SECONDS) if limit_to_one_minute else segment["end"]
-            segment_duration = end_time - segment["start"]
+            if limit_to_one_minute:
+                end_time = min(end_time, TIME_LIMIT_SECONDS)
+            
+            segment_duration = end_time - start_time
             
             # Skip segments with zero duration
             if segment_duration <= 0:
@@ -1326,10 +1375,11 @@ def normalize_segments(segments, min_duration=12, max_duration=35, target_durati
     return normalized
 
 def write_segments_to_srt(segments, output_path):
-    """Write segments to SRT file with validation and safety measures."""
+    """Write segments to an SRT file"""
     try:
-        # Validate segments before writing
+        # Validate segments
         for i, segment in enumerate(segments, 1):
+            # Check for required fields
             required_fields = ['start', 'end', 'text']
             missing_fields = [field for field in required_fields if field not in segment]
             if missing_fields:
@@ -1371,6 +1421,37 @@ def write_segments_to_srt(segments, output_path):
             shutil.copy2(backup_path, output_path)
             logger.info(f"Restored backup file after error: {output_path}")
         return False
+
+def convert_srt_to_vtt(srt_content):
+    """Convert SRT format to VTT format"""
+    # Add VTT header
+    vtt_content = "WEBVTT\n\n"
+    
+    # Split by double newline to get segments
+    segments = srt_content.strip().split("\n\n")
+    
+    for segment in segments:
+        lines = segment.strip().split("\n")
+        
+        # Skip empty segments
+        if len(lines) < 3:
+            continue
+        
+        # Keep segment number (optional in VTT)
+        segment_number = lines[0]
+        
+        # Convert timestamp format from 00:00:00,000 to 00:00:00.000
+        timestamp = lines[1].replace(',', '.')
+        
+        # Get text content (could be multiple lines)
+        text = "\n".join(lines[2:])
+        
+        # Write the segment to VTT
+        vtt_content += segment_number + "\n"
+        vtt_content += timestamp + "\n"
+        vtt_content += text + "\n\n"
+    
+    return vtt_content
 
 def transcribe_audio(audio_path, force_transcription=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp", limit_to_one_minute=False):
     """Transcribe audio using OpenAI's Whisper API"""
@@ -1505,8 +1586,26 @@ def extract_segments(transcript_path):
                 
                 # Skip empty lines
                 if not line:
-                    if current_segment:
+                    if current_segment and 'text' in current_segment and 'timestamp' in current_segment:
+                        # Convert timestamp strings to seconds before adding the segment
+                        start_str = current_segment['timestamp']['start']
+                        end_str = current_segment['timestamp']['end']
+                        
+                        # Parse timestamps to seconds
+                        start_seconds = parse_timestamp(start_str)
+                        end_seconds = parse_timestamp(end_str)
+                        
+                        # Add start and end times in seconds for processing
+                        current_segment['start'] = start_seconds
+                        current_segment['end'] = end_seconds
+                        current_segment['start_time'] = start_seconds  # Add both naming conventions
+                        current_segment['end_time'] = end_seconds      # Add both naming conventions
+                        
                         segments.append(current_segment)
+                        current_segment = None
+                    elif current_segment:
+                        # Skip incomplete segments
+                        logger.warning(f"Skipping incomplete segment: {current_segment}")
                         current_segment = None
                     continue
                 
@@ -1540,11 +1639,31 @@ def extract_segments(transcript_path):
                         current_segment['text'] = line
         
         # Add the last segment if it exists
-        if current_segment:
+        if current_segment and 'text' in current_segment and 'timestamp' in current_segment:
+            # Convert timestamp strings to seconds
+            start_str = current_segment['timestamp']['start']
+            end_str = current_segment['timestamp']['end']
+            
+            # Parse timestamps to seconds
+            start_seconds = parse_timestamp(start_str)
+            end_seconds = parse_timestamp(end_str)
+            
+            # Add start and end times in seconds for processing
+            current_segment['start'] = start_seconds
+            current_segment['end'] = end_seconds
+            current_segment['start_time'] = start_seconds  # Add both naming conventions
+            current_segment['end_time'] = end_seconds      # Add both naming conventions
+            
             segments.append(current_segment)
         
         # Log the number of segments found
         logger.info(f"Extracted {len(segments)} segments from transcript")
+        
+        # Log duration info for debugging
+        for i, segment in enumerate(segments):
+            duration = segment['end'] - segment['start']
+            logger.info(f"Segment {i+1}: start={segment['start']:.2f}, end={segment['end']:.2f}, duration={duration:.2f}s")
+        
         return segments
         
     except Exception as e:
@@ -1709,11 +1828,16 @@ def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
             )
             
             if success:
+                # Create a visual entry with the correct field access
+                # Check if start/end or start_time/end_time are available
+                start_time = segment.get('start_time', segment.get('start', 0))
+                end_time = segment.get('end_time', segment.get('end', 0))
+                
                 visuals.append({
                     'text': segment['text'],
                     'image_path': image_path,
-                    'start_time': segment['start'],
-                    'end_time': segment['end']
+                    'start_time': start_time,
+                    'end_time': end_time
                 })
                 logger.info(f"Generated visual for segment {i}")
             else:
@@ -1754,6 +1878,11 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
     task_start_time = time.time()
     task_name = "initialization"
     task_stack = [("initialization", task_start_time)]
+    
+    # Reset cost tracker at beginning of process if available
+    if COST_TRACKER_AVAILABLE:
+        cost_tracker.reset()
+        logger.info("Cost tracker reset for new processing task")
     
     # Start progress monitoring thread
     debug_point("Starting progress monitoring")
@@ -1839,13 +1968,19 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
             # Save the report
             cost_tracker.save_report(report_path)
             
-            # Log the total cost
+            # Get the cost summary
             cost_summary = cost_tracker.get_summary()
+            
+            # Log the total cost
             logger.info(f"Total API cost: ${cost_summary['total_cost']:.4f}")
             logger.info(f"Cost breakdown: OpenAI Chat ${cost_summary['api_breakdown']['openai']['chat']:.4f}, " 
                        f"OpenAI Transcription ${cost_summary['api_breakdown']['openai']['transcription']:.4f}, "
                        f"Stability Image ${cost_summary['api_breakdown']['stability']['image']:.4f}")
             logger.info(f"Cost report saved to {report_path}")
+            
+            # Print cost data in special format for webapp to parse
+            cost_json = json.dumps(cost_summary)
+            print(f"COST_DATA: {cost_json}")
         
         complete_task("Creating final video")
         
@@ -1856,6 +1991,15 @@ def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_i
         traceback.print_exc()
         return False
     finally:
+        # Output final cost data before finishing
+        if COST_TRACKER_AVAILABLE:
+            try:
+                cost_summary = cost_tracker.get_summary()
+                cost_json = json.dumps(cost_summary)
+                print(f"COST_DATA: {cost_json}")
+            except Exception as e:
+                logger.error(f"Error generating final cost report: {str(e)}")
+        
         debug_point("Processing completed")
 
 def init_moviepy():
