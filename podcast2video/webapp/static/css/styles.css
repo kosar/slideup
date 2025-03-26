@@ -56,6 +56,21 @@ body {
     font-weight: bold;
 }
 
+/* Processing Logs Styles */
+#logs-section .border {
+    max-height: 200px;
+    overflow-y: auto;
+    overflow-x: auto;
+}
+
+#logs-content {
+    font-size: 0.75rem; /* Before: ~1rem (16px), After: 12px */
+    line-height: 1.3;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
 /* Configuration Page Styles */
 .form-group {
     margin-bottom: 20px;
@@ -95,5 +110,9 @@ textarea {
     
     .drop-zone {
         padding: 20px 10px;
+    }
+    
+    #logs-content {
+        font-size: 0.7rem; /* Even smaller on mobile: 11.2px */
     }
 } 
