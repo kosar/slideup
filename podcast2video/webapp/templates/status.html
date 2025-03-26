@@ -56,12 +56,29 @@
                             </div>
                         </div>
                         
+                        <div id="cancel-section" class="text-center mb-4 {% if status.status not in ['starting', 'processing'] %}d-none{% endif %}">
+                            <button id="cancel-button" class="btn btn-danger">
+                                <span class="spinner-border spinner-border-sm d-none" id="cancel-spinner" role="status" aria-hidden="true"></span>
+                                Cancel Processing
+                            </button>
+                        </div>
+                        
                         <div id="download-section" class="text-center mb-4 {% if status.status != 'completed' %}d-none{% endif %}">
                             <div class="alert alert-success">
                                 <h5>Processing Complete!</h5>
                                 <p>Your video is ready for download.</p>
                                 <a href="{{ url_for('download', task_id=task_id) }}" class="btn btn-success btn-lg" id="download-button">
                                     Download Video
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <div id="cancelled-section" class="text-center mb-4 {% if status.status != 'cancelled' %}d-none{% endif %}">
+                            <div class="alert alert-info">
+                                <h5>Processing Cancelled</h5>
+                                <p>The video processing was successfully cancelled.</p>
+                                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                                    Upload New File
                                 </a>
                             </div>
                         </div>
@@ -126,12 +143,24 @@
                     // Show/hide sections based on status
                     if (data.status === 'completed') {
                         document.getElementById('download-section').classList.remove('d-none');
+                        document.getElementById('cancel-section').classList.add('d-none');
                         document.getElementById('download-button').href = `/download/${taskId}`;
                         clearInterval(pollInterval);
                     } else if (data.status === 'failed') {
                         document.getElementById('error-section').classList.remove('d-none');
+                        document.getElementById('cancel-section').classList.add('d-none');
                         document.getElementById('error-message').textContent = data.message;
                         clearInterval(pollInterval);
+                    } else if (data.status === 'cancelled') {
+                        document.getElementById('cancelled-section').classList.remove('d-none');
+                        document.getElementById('cancel-section').classList.add('d-none');
+                        clearInterval(pollInterval);
+                    } else if (data.status === 'cancelling') {
+                        document.getElementById('cancel-button').disabled = true;
+                        document.getElementById('cancel-spinner').classList.remove('d-none');
+                        document.getElementById('cancel-button').textContent = ' Cancelling...';
+                    } else if (data.status !== 'starting' && data.status !== 'processing') {
+                        document.getElementById('cancel-section').classList.add('d-none');
                     }
                 })
                 .catch(error => {
@@ -139,6 +168,75 @@
                     // Don't stop polling on network errors
                 });
         }
+        
+        // Cancel button handler
+        document.getElementById('cancel-button').addEventListener('click', function() {
+            if (!confirm('Are you sure you want to cancel this processing task?')) {
+                return;
+            }
+            
+            // Disable button and show spinner
+            this.disabled = true;
+            document.getElementById('cancel-spinner').classList.remove('d-none');
+            this.textContent = ' Cancelling...';
+            
+            // Send cancellation request
+            fetch(`/api/cancel/${taskId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => {
+                if (!response.ok && response.status !== 200) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Cancellation response:', data);
+                
+                // Update status based on response
+                if (data.status === 'cancelled' || data.status === 'cancelling') {
+                    document.getElementById('status-message').textContent = data.message || 'Processing cancelled by user';
+                    document.getElementById('status-text').textContent = 'cancelled';
+                    
+                    // Show cancelled section instead of error section
+                    document.getElementById('cancelled-section').classList.remove('d-none');
+                    document.getElementById('error-section').classList.add('d-none');
+                    
+                    document.getElementById('cancel-section').classList.add('d-none');
+                    
+                    // Stop polling
+                    clearInterval(pollInterval);
+                } else if (data.status === 'error') {
+                    // Reset button if cancellation failed
+                    document.getElementById('cancel-button').disabled = false;
+                    document.getElementById('cancel-spinner').classList.add('d-none');
+                    document.getElementById('cancel-button').textContent = 'Cancel Processing';
+                    
+                    // Show error message
+                    alert(`Failed to cancel: ${data.message}`);
+                } else {
+                    // Task is in a state that can't be cancelled (already completed, etc.)
+                    document.getElementById('cancel-section').classList.add('d-none');
+                    
+                    // Show appropriate message
+                    alert(`Task is already ${data.status}: ${data.message}`);
+                }
+            })
+            .catch(error => {
+                console.error('Error cancelling task:', error);
+                
+                // Reset button
+                document.getElementById('cancel-button').disabled = false;
+                document.getElementById('cancel-spinner').classList.add('d-none');
+                document.getElementById('cancel-button').textContent = 'Cancel Processing';
+                
+                // Show error message
+                alert('Error communicating with the server. Please try again.');
+            });
+        });
         
         // Start polling
         document.addEventListener('DOMContentLoaded', function() {

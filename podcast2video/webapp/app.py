@@ -78,6 +78,7 @@ Include details like style, composition, colors, and elements to include in the 
 
 # Background processes tracking
 processing_tasks = {}
+processing_processes = {}  # Track actual subprocess handles
 
 # Add datetime filter for templates
 @app.template_filter('datetime')
@@ -161,6 +162,9 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
             bufsize=1
         )
         
+        # Store process for potential cancellation
+        processing_processes[task_id] = process
+        
         # Read output in real-time
         while True:
             output = process.stdout.readline()
@@ -191,6 +195,9 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
                         'progress': 80,
                         'message': 'Creating final video...'
                     })
+                elif "Received signal" in output and "shutting down" in output:
+                    # Process is shutting down due to signal (likely from cancellation)
+                    logger.info(f"Process for task {task_id} is shutting down gracefully")
                 
                 # Add to logs
                 processing_tasks[task_id]['logs'].append(output)
@@ -198,6 +205,12 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
         # Get the return code
         return_code = process.poll()
         
+        # Check if the task was cancelled first
+        if task_id in processing_tasks and processing_tasks[task_id].get('status') in ['cancelled', 'cancelling']:
+            logger.info(f"Task {task_id} was cancelled - not checking for output file")
+            return
+            
+        # Only check for successful completion if not cancelled
         if return_code == 0:
             # Check if output file exists
             if os.path.exists(output_file):
@@ -215,15 +228,119 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
             error_output = process.stderr.read()
             raise Exception(f"Process failed with return code {return_code}: {error_output}")
             
+    except FileNotFoundError as e:
+        # Special handling for file not found - check if cancelled first
+        if task_id in processing_tasks and processing_tasks[task_id].get('status') in ['cancelled', 'cancelling']:
+            logger.info(f"Ignoring FileNotFoundError for cancelled task {task_id}")
+            return
+        
+        # If not cancelled, log the error and update status
+        logger.error(f"Error in background processing: {str(e)}")
+        if task_id in processing_tasks and processing_tasks[task_id].get('status') != 'cancelled':
+            processing_tasks[task_id].update({
+                'status': 'failed',
+                'progress': 0,
+                'message': f'Processing failed: {str(e)}',
+                'end_time': time.time()
+            })
+        raise
+            
     except Exception as e:
         logger.error(f"Error in background processing: {str(e)}")
+        # Check if the task was cancelled before setting failed status
+        if task_id in processing_tasks and processing_tasks[task_id].get('status') != 'cancelled':
+            processing_tasks[task_id].update({
+                'status': 'failed',
+                'progress': 0,
+                'message': f'Processing failed: {str(e)}',
+                'end_time': time.time()
+            })
+        raise
+    finally:
+        # Remove process from tracking dict when done
+        if task_id in processing_processes:
+            processing_processes.pop(task_id, None)
+
+def cancel_task(task_id):
+    """Cancel a running processing task."""
+    logger.info(f"Cancellation requested for task {task_id}")
+    
+    if task_id not in processing_tasks:
+        logger.warning(f"Cannot cancel: Task {task_id} not found")
+        return False, "Task not found"
+    
+    if processing_tasks[task_id]['status'] not in ['starting', 'processing']:
+        logger.warning(f"Cannot cancel: Task {task_id} is already {processing_tasks[task_id]['status']}")
+        return False, f"Task is {processing_tasks[task_id]['status']}"
+    
+    # Update status to cancelling
+    processing_tasks[task_id].update({
+        'status': 'cancelling',
+        'message': 'Cancelling processing...'
+    })
+    
+    # Try to terminate the process
+    success = False
+    try:
+        # Check if we have a process handle for this task
+        if task_id in processing_processes:
+            process = processing_processes[task_id]
+            logger.info(f"Terminating process for task {task_id}")
+            
+            # Terminate process
+            process.terminate()
+            
+            # Wait a short time for graceful termination
+            for _ in range(5):
+                if process.poll() is not None:
+                    break
+                time.sleep(0.5)
+                
+            # Force kill if still running
+            if process.poll() is None:
+                logger.warning(f"Process for task {task_id} did not terminate gracefully, forcing kill")
+                process.kill()
+            
+            # Clean up process reference - use pop with default to avoid KeyError
+            # The key might be removed by another thread between our check and deletion
+            processing_processes.pop(task_id, None)
+        else:
+            logger.warning(f"No process found for task {task_id}, updating status only")
+        
+        # Update status - do this whether or not we found a process
+        # (the process might have completed or failed already)
         processing_tasks[task_id].update({
-            'status': 'failed',
+            'status': 'cancelled',
             'progress': 0,
-            'message': f'Processing failed: {str(e)}',
+            'message': 'Processing cancelled by user',
             'end_time': time.time()
         })
-        raise
+        
+        # Add log entry
+        processing_tasks[task_id]['logs'].append("Processing cancelled by user.")
+        
+        success = True
+            
+    except Exception as e:
+        error_message = f"Error during cancellation: {str(e)}"
+        logger.error(f"Error cancelling task {task_id}: {str(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Even if there's an error, mark the task as cancelled for the UI
+        # This ensures the user gets a reasonable response even if cleanup fails
+        processing_tasks[task_id].update({
+            'status': 'cancelled',
+            'message': 'Processing cancelled (with cleanup errors)',
+            'end_time': time.time()
+        })
+        
+        # Add log entry about the error
+        processing_tasks[task_id]['logs'].append(f"Error during cancellation cleanup: {str(e)}")
+        
+        return True, "Task cancelled (with cleanup errors)"
+    
+    return success, "Task cancelled successfully"
 
 @app.route('/')
 def index():
@@ -538,6 +655,65 @@ def run_test_harness():
     
     # Return success if all tests passed
     return results['overall_status'] == 'success'
+
+@app.route('/api/cancel/<task_id>', methods=['POST'])
+def api_cancel_task(task_id):
+    """API endpoint for cancelling a task"""
+    try:
+        # Check if task exists
+        if task_id not in processing_tasks:
+            return jsonify({'status': 'error', 'message': 'Task not found'}), 404
+            
+        # Task exists but might be in a state that can't be cancelled
+        if processing_tasks[task_id]['status'] not in ['starting', 'processing']:
+            current_status = processing_tasks[task_id]['status']
+            return jsonify({
+                'status': current_status,
+                'message': f'Task is already {current_status}'
+            }), 200
+        
+        # Log the cancellation request
+        logger.info(f"API request to cancel task {task_id}")
+        
+        # Attempt to cancel the task
+        success, message = cancel_task(task_id)
+        
+        # Always check the actual status after attempting cancellation
+        actual_status = processing_tasks[task_id]['status']
+        actual_message = processing_tasks[task_id]['message']
+        
+        if actual_status == 'cancelled':
+            # If the task is marked as cancelled in the data structure, report success
+            # even if there were errors during the cleanup process
+            return jsonify({'status': 'cancelled', 'message': actual_message}), 200
+        elif success:
+            # This case should be covered by the above check, but just in case
+            return jsonify({'status': 'cancelled', 'message': message}), 200
+        else:
+            # If cancellation failed but didn't raise an exception
+            return jsonify({'status': 'error', 'message': message}), 400
+    except Exception as e:
+        # Log the unexpected error
+        logger.error(f"Unexpected error in cancel API: {str(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Try to update the task status if possible
+        try:
+            if task_id in processing_tasks:
+                # Even if there's an API error, try to mark the task as cancelled
+                # to give a better user experience
+                processing_tasks[task_id].update({
+                    'status': 'cancelled',
+                    'message': 'Processing cancelled (with errors)',
+                    'end_time': time.time()
+                })
+                return jsonify({'status': 'cancelled', 'message': 'Task cancelled but encountered errors'}), 200
+        except:
+            # If even that fails, just return the original error
+            pass
+            
+        return jsonify({'status': 'error', 'message': 'Server error while cancelling task'}), 500
 
 # Note: We're using subprocess to call the original podcast-to-video.py script
 # rather than importing its components directly to avoid dependency issues with MoviePy
