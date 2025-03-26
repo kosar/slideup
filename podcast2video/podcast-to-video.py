@@ -536,9 +536,12 @@ except Exception as e:
 # Initialize Stability API for images
 stability_api = None  # Initialize as None by default
 
-def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=20, samples=1, non_interactive=False):
-    """Generate an image using Stability API"""
-    logger.info(f"Generating image with prompt: {prompt}")
+def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=50, samples=1, non_interactive=False):
+    """Generate an image using Stability API with enhanced parameters"""
+    logger.info("Starting image generation process")
+    logger.info(f"Input prompt: {prompt}")
+    logger.info(f"Output path: {output_path}")
+    logger.info(f"Parameters:")
     logger.info(f"- Width: {width}")
     logger.info(f"- Height: {height}")
     logger.info(f"- Steps: {steps}")
@@ -551,7 +554,43 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
             logger.error("STABILITY_API_KEY not found in environment variables")
             return False
 
+        # Generate enhanced prompt using LLM if available
+        logger.info("Attempting to enhance prompt using LLM")
+        start_time = time.time()
+        enhanced_prompt, negative_prompt = generate_llm_prompt(prompt, ai_client)
+        prompt_gen_time = time.time() - start_time
+        logger.info(f"Prompt generation completed in {prompt_gen_time:.2f} seconds")
+
+        if enhanced_prompt:
+            logger.info(f"Using enhanced prompt: {enhanced_prompt}")
+            if negative_prompt:
+                logger.info(f"Using negative prompt: {negative_prompt}")
+        else:
+            enhanced_prompt = prompt
+            logger.warning("Using original prompt due to LLM enhancement failure")
+
+        # Build request payload
+        logger.info("Building Stability API request payload")
+        request_payload = {
+            "text_prompts": [{"text": enhanced_prompt, "weight": 1.0}],
+            "cfg_scale": 7.0,  # Balanced value for creativity and prompt adherence
+            "height": height,
+            "width": width,
+            "samples": samples,
+            "steps": steps,
+            "style_preset": "photographic",  # Default to photographic style
+        }
+        
+        # Add negative prompt if available
+        if negative_prompt:
+            request_payload["text_prompts"].append(
+                {"text": negative_prompt, "weight": -1.0}
+            )
+            logger.info("Added negative prompt to request payload")
+
         # Make API request to Stability
+        logger.info("Sending request to Stability API")
+        api_start_time = time.time()
         response = requests.post(
             "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
             headers={
@@ -559,16 +598,10 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
                 "Accept": "application/json",
                 "Authorization": f"Bearer {stability_key}"
             },
-            json={
-                "text_prompts": [{"text": prompt}],
-                "cfg_scale": 7.5,
-                "height": height,
-                "width": width,
-                "samples": samples,
-                "steps": steps,
-                "style_preset": "photographic"
-            }
+            json=request_payload
         )
+        api_time = time.time() - api_start_time
+        logger.info(f"Stability API response received in {api_time:.2f} seconds")
 
         if response.status_code != 200:
             logger.error(f"Stability API request failed with status code {response.status_code}")
@@ -576,12 +609,16 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
             return False
 
         # Process the response and save the image
+        logger.info("Processing Stability API response")
         data = response.json()
         if "artifacts" in data and len(data["artifacts"]) > 0:
+            logger.info("Successfully received image data from API")
             image_data = base64.b64decode(data["artifacts"][0]["base64"])
+            logger.info(f"Saving image to {output_path}")
             with open(output_path, "wb") as f:
                 f.write(image_data)
-            logger.info(f"Successfully generated and saved image to {output_path}")
+            total_time = time.time() - start_time
+            logger.info(f"Image generation completed successfully in {total_time:.2f} seconds")
             return True
         else:
             logger.error("No image data in Stability API response")
@@ -589,6 +626,8 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
 
     except Exception as e:
         logger.error(f"Error generating image: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 def create_video_segment(segment, output_path, audio_file_path, style="modern"):
@@ -1802,6 +1841,145 @@ def init_moviepy():
             logger.error(f"Unexpected error initializing MoviePy: {e}")
             MOVIEPY_AVAILABLE = False
     return MOVIEPY_AVAILABLE
+
+def generate_llm_prompt(instructions, llm_client):
+    """Generate an optimized image prompt from user instructions using an LLM"""
+    logger.info("Starting LLM prompt generation")
+    logger.info(f"Input instructions: {instructions}")
+    
+    # Check cache first
+    cache_key = hashlib.md5(instructions.encode()).hexdigest()
+    cache_file = os.path.join("cache", f"prompt_{cache_key}.json")
+    
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+                logger.info("Using cached prompt")
+                return cached_data["prompt"], cached_data.get("negative_prompt")
+        except Exception as e:
+            logger.warning(f"Error reading cache: {e}")
+    
+    system_message = """
+    You are an expert at creating detailed, effective prompts for image generation. 
+    Convert the user's instructions into a detailed prompt that will help Stable Diffusion 
+    generate high-quality, realistic images. Include specific details about:
+    - Subject description (detailed physical attributes)
+    - Setting/background
+    - Lighting conditions
+    - Camera perspective and framing
+    - Style and mood
+    - Technical details (resolution, quality)
+    
+    Also generate an appropriate negative prompt to avoid common issues.
+    
+    Return your response in JSON format with two keys:
+    {
+        "prompt": "your detailed prompt here",
+        "negative_prompt": "unwanted elements here"
+    }
+    
+    IMPORTANT: Return ONLY the JSON object, no markdown formatting or additional text.
+    """
+    
+    try:
+        logger.info("Sending request to LLM for prompt generation")
+        start_time = time.time()
+        
+        response = llm_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": f"Create an image generation prompt based on these instructions: {instructions}"}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        elapsed_time = time.time() - start_time
+        logger.info(f"LLM response received in {elapsed_time:.2f} seconds")
+        
+        # Get the raw response content
+        content = response.choices[0].message.content.strip()
+        logger.debug(f"Raw LLM response: {content}")
+        
+        # Try multiple methods to parse the JSON response
+        prompt_data = None
+        parse_errors = []
+        
+        # Method 1: Direct JSON parsing
+        try:
+            prompt_data = json.loads(content)
+            logger.info("Successfully parsed JSON directly")
+        except json.JSONDecodeError as e:
+            parse_errors.append(f"Direct parsing failed: {e}")
+            
+            # Method 2: Try to extract JSON from markdown code blocks
+            try:
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                if json_match:
+                    prompt_data = json.loads(json_match.group(1))
+                    logger.info("Successfully extracted JSON from markdown code blocks")
+                else:
+                    parse_errors.append("No JSON found in markdown code blocks")
+                    
+                    # Method 3: Try to find JSON between curly braces
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        prompt_data = json.loads(json_match.group())
+                        logger.info("Successfully extracted JSON from curly braces")
+                    else:
+                        parse_errors.append("No JSON found between curly braces")
+            except Exception as e:
+                parse_errors.append(f"Extraction methods failed: {e}")
+        
+        if prompt_data is None:
+            logger.error("ALL JSON parsing methods failed!")
+            logger.error("Parse errors encountered:")
+            for error in parse_errors:
+                logger.error(f"- {error}")
+            logger.error(f"Raw response content: {content}")
+            return instructions, None
+        
+        # Validate the parsed data
+        if not isinstance(prompt_data, dict):
+            logger.error(f"Parsed data is not a dictionary: {type(prompt_data)}")
+            return instructions, None
+            
+        prompt = prompt_data.get("prompt")
+        negative_prompt = prompt_data.get("negative_prompt")
+        
+        if not prompt:
+            logger.error("No prompt found in parsed data")
+            return instructions, None
+            
+        # Cache the successful result
+        try:
+            os.makedirs("cache", exist_ok=True)
+            with open(cache_file, 'w') as f:
+                json.dump({
+                    "prompt": prompt,
+                    "negative_prompt": negative_prompt,
+                    "timestamp": time.time()
+                }, f)
+            logger.info(f"Cached prompt to {cache_file}")
+        except Exception as e:
+            logger.warning(f"Failed to cache prompt: {e}")
+        
+        logger.info("Successfully parsed LLM response")
+        logger.info(f"Generated prompt: {prompt}")
+        if negative_prompt:
+            logger.info(f"Generated negative prompt: {negative_prompt}")
+        else:
+            logger.warning("No negative prompt generated")
+            
+        return prompt, negative_prompt
+            
+    except Exception as e:
+        logger.error(f"Error generating LLM prompt: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return instructions, None
 
 if __name__ == "__main__":
     try:
