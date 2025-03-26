@@ -1049,6 +1049,12 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
             target_duration = max(get_end_time(segment) for segment in enhanced_segments)
             logger.info(f"Using full duration: {target_duration:.2f} seconds")
         
+        # Ensure the images directory exists and is accessible
+        image_folder = os.path.join(temp_dir, "images")
+        if not os.path.exists(image_folder):
+            logger.warning(f"Images folder not found at {image_folder}, creating it")
+            os.makedirs(image_folder, exist_ok=True)
+        
         # First, create video segments from PNG files
         valid_segments = []
         for i, segment in enumerate(enhanced_segments, 1):
@@ -1075,7 +1081,19 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
                 logger.info(f"Skipping segment {i} as it has zero duration")
                 continue
             
-            png_path = os.path.join(temp_dir, f"segment_{i}.png")
+            # Look for the PNG file in the images subfolder
+            png_path = os.path.join(image_folder, f"segment_{i}.png")
+            
+            # Fallback to original path if not found
+            if not os.path.exists(png_path):
+                fallback_png_path = os.path.join(temp_dir, f"segment_{i}.png")
+                if os.path.exists(fallback_png_path):
+                    logger.warning(f"Using fallback image path: {fallback_png_path}")
+                    png_path = fallback_png_path
+                else:
+                    logger.error(f"Image not found at either {png_path} or {fallback_png_path}")
+                    continue
+            
             segment_path = os.path.join(temp_dir, f"segment_{i}.mp4")
             
             # Create video segment from PNG
