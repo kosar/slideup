@@ -77,6 +77,7 @@ task_start_time = None  # Track when current task started
 task_name = None  # Track current task name
 task_stack = []  # Stack to track nested operations
 min_task_duration = 0.5  # Increased minimum duration to log (in seconds)
+chat_model = None  # Global variable to store the current chat model
 
 # Import optional modules
 try:
@@ -514,6 +515,36 @@ def test_api_connection(client, api_type="openai"):
                 logger.warning(f"OpenAI API returned unexpected response: {result}")
                 return True  # Still return true since we got a response
                 
+        elif api_type == "deepseek":
+            # Test DeepSeek API with a simple query
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": "Hello, this is a test. Respond with 'OK' if you can see this."}],
+                max_tokens=10
+            )
+            
+            # Track API cost if cost tracker is available
+            if COST_TRACKER_AVAILABLE:
+                # Extract token usage
+                input_tokens = response.usage.prompt_tokens
+                output_tokens = response.usage.completion_tokens
+                cost_tracker.add_openai_chat_cost(
+                    model="deepseek-chat",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="api_connection_test"
+                )
+            
+            result = response.choices[0].message.content.strip()
+            logger.info(f"DeepSeek API test response: {result}")
+            
+            if "ok" in result.lower():
+                logger.info("DeepSeek API connection successful!")
+                return True
+            else:
+                logger.warning(f"DeepSeek API returned unexpected response: {result}")
+                return True  # Still return true since we got a response
+                
         elif api_type == "stability":
             # For Stability API, we'll make a test request
             headers = {"Authorization": f"Bearer {os.environ.get('STABILITY_API_KEY')}"}
@@ -565,8 +596,8 @@ try:
                 api_key=deepseek_api_key,
                 base_url="https://api.deepseek.com/v1"
             )
-            chat_model = "deepseek-chat"  # Changed from "deepseek-llm" to "deepseek-chat" which works
-            embedding_model = "deepseek-embedding"
+            chat_model = "deepseek-chat"  # DeepSeek's chat model
+            embedding_model = "deepseek-embedding"  # DeepSeek's embedding model
             api_type = "deepseek"
             logger.info("Using DeepSeek API for language models")
             
@@ -576,6 +607,7 @@ try:
                 # Reset client if test failed
                 ai_client = None
                 api_type = None
+                chat_model = None
                 
                 # If OpenAI is available, try that instead
                 if openai_api_key:
@@ -594,8 +626,8 @@ try:
             # Check if OpenAI library is installed
             from openai import OpenAI
             ai_client = OpenAI(api_key=openai_api_key)
-            chat_model = "gpt-4o"
-            embedding_model = "text-embedding-3-large"
+            chat_model = "gpt-4"  # OpenAI's model
+            embedding_model = "text-embedding-3-large"  # OpenAI's embedding model
             api_type = "openai"
             logger.info("Using OpenAI API for language models")
             
@@ -1837,15 +1869,28 @@ def enhance_segments(segments, limit_to_one_minute=False):
         logger.info(f"Limiting to first 3 segments for one-minute testing")
         segments = segments[:3]
     
-    # Initialize OpenAI Client
-    openai_api_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_api_key:
-        logger.error("OPENAI_API_KEY environment variable not set")
+    # Check if we have a valid chat model
+    global chat_model
+    if not chat_model:
+        logger.error("No valid chat model available")
         return segments
     
-    ai_client = OpenAI(
-        api_key=openai_api_key
-    )
+    # Initialize OpenAI Client
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+    
+    if not (openai_api_key or deepseek_api_key):
+        logger.error("No API keys available")
+        return segments
+    
+    # Use DeepSeek if available, otherwise OpenAI
+    if deepseek_api_key:
+        ai_client = OpenAI(
+            api_key=deepseek_api_key,
+            base_url="https://api.deepseek.com/v1"
+        )
+    else:
+        ai_client = OpenAI(api_key=openai_api_key)
     
     enhanced_segments = []
     
@@ -1871,7 +1916,7 @@ Provide specific details about what should be in the image, visual style, colors
             
             # Make API call with timeout
             response = ai_client.chat.completions.create(
-                model="gpt-4",
+                model=chat_model,  # Use the global chat model
                 messages=[
                     {"role": "system", "content": "You're an expert at analyzing podcast segments and creating visual representations."},
                     {"role": "user", "content": prompt}
@@ -1885,7 +1930,7 @@ Provide specific details about what should be in the image, visual style, colors
                 input_tokens = response.usage.prompt_tokens
                 output_tokens = response.usage.completion_tokens
                 cost_tracker.add_openai_chat_cost(
-                    model="gpt-4",
+                    model=chat_model,  # Use the global chat model
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     operation_name="enhance_segment"
