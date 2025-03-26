@@ -669,7 +669,8 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
         return None
     
     # This is the URL for text-to-image generation
-    url = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
+    model_id = "stable-diffusion-xl-1024-v1-0"
+    url = f"https://api.stability.ai/v1/generation/{model_id}/text-to-image"
     
     # Prepare headers
     headers = {
@@ -711,6 +712,7 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
                 height=height,
                 steps=steps,
                 samples=samples,
+                model=model_id,
                 operation_name="image_generation"
             )
         

@@ -32,10 +32,26 @@ class OpenAICostConfig:
 
 class StabilityCostConfig:
     """Stability API cost constants"""
-    # Image generation costs - per image
-    IMAGE_512x512 = 0.20
-    IMAGE_768x768 = 0.20  
-    IMAGE_1024x1024 = 0.20
+    # Image generation costs per image in dollars (1 credit = $0.01)
+    # Based on Stability AI's pricing: https://platform.stability.ai/pricing
+    
+    # Models and their costs
+    STABLE_IMAGE_ULTRA = 0.08       # 8 credits ($0.08)
+    STABLE_DIFFUSION_3_LARGE = 0.065  # 6.5 credits ($0.065)
+    STABLE_DIFFUSION_3_TURBO = 0.04   # 4 credits ($0.04)
+    STABLE_DIFFUSION_3_MEDIUM = 0.035 # 3.5 credits ($0.035)
+    STABLE_IMAGE_CORE = 0.03        # 3 credits ($0.03)
+    SDXL_1_0 = 0.009               # 0.9 credits ($0.009)
+    SD_1_6 = 0.009                 # 0.9 credits ($0.009)
+    
+    # Default model cost - SDXL is used in the app (stable-diffusion-xl-1024-v1-0)
+    DEFAULT_MODEL_COST = SDXL_1_0
+    
+    # Legacy size-based costs (kept for backward compatibility)
+    IMAGE_512x512 = DEFAULT_MODEL_COST
+    IMAGE_768x768 = DEFAULT_MODEL_COST
+    IMAGE_1024x1024 = DEFAULT_MODEL_COST
+    
     # Adjustments for steps
     STEPS_MULTIPLIER = {
         30: 1.0,  # Base cost for 30 steps
@@ -195,6 +211,7 @@ class CostTracker:
                                  height: int,
                                  steps: int = 30,
                                  samples: int = 1,
+                                 model: str = "stable-diffusion-xl-1024-v1-0",
                                  operation_name: str = "image") -> float:
         """
         Calculate and track the cost of a Stability API image generation
@@ -204,18 +221,35 @@ class CostTracker:
             height (int): Image height
             steps (int): Number of diffusion steps
             samples (int): Number of images generated
+            model (str): The Stability AI model used
             operation_name (str): A descriptive name for this operation
             
         Returns:
             float: The cost of this operation
         """
-        # Determine base cost by image size
-        if width <= 512 and height <= 512:
-            base_cost = StabilityCostConfig.IMAGE_512x512
-        elif width <= 768 and height <= 768:
-            base_cost = StabilityCostConfig.IMAGE_768x768
+        # Determine base cost based on model
+        if model == "stable-diffusion-xl-1024-v1-0" or model.startswith("sdxl"):
+            base_cost = StabilityCostConfig.SDXL_1_0
+        elif model == "stable-diffusion-v1-6" or model.startswith("sd-1"):
+            base_cost = StabilityCostConfig.SD_1_6
+        elif "stable-image-ultra" in model:
+            base_cost = StabilityCostConfig.STABLE_IMAGE_ULTRA
+        elif "stable-diffusion-3-large" in model and "turbo" in model:
+            base_cost = StabilityCostConfig.STABLE_DIFFUSION_3_TURBO
+        elif "stable-diffusion-3-large" in model:
+            base_cost = StabilityCostConfig.STABLE_DIFFUSION_3_LARGE
+        elif "stable-diffusion-3-medium" in model:
+            base_cost = StabilityCostConfig.STABLE_DIFFUSION_3_MEDIUM  
+        elif "stable-image-core" in model:
+            base_cost = StabilityCostConfig.STABLE_IMAGE_CORE
         else:
-            base_cost = StabilityCostConfig.IMAGE_1024x1024
+            # Fall back to legacy sizing logic for unrecognized models
+            if width <= 512 and height <= 512:
+                base_cost = StabilityCostConfig.IMAGE_512x512
+            elif width <= 768 and height <= 768:
+                base_cost = StabilityCostConfig.IMAGE_768x768
+            else:
+                base_cost = StabilityCostConfig.IMAGE_1024x1024
         
         # Adjust for steps - find closest step count in our config
         steps_key = min(StabilityCostConfig.STEPS_MULTIPLIER.keys(), 
@@ -227,6 +261,7 @@ class CostTracker:
         
         # Create details for this entry
         details = {
+            'model': model,
             'width': width,
             'height': height,
             'steps': steps,
@@ -248,7 +283,7 @@ class CostTracker:
         self.total_cost += total_cost
         self.api_totals['stability']['image'] += total_cost
         
-        logger.debug(f"Added Stability image cost: ${total_cost:.6f} for {width}x{height} image")
+        logger.debug(f"Added Stability image cost: ${total_cost:.6f} for {width}x{height} image, model: {model}")
         return total_cost
     
     def get_current_cost(self) -> float:
