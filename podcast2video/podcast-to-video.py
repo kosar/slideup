@@ -1230,6 +1230,37 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
         # Move the temporary output to the final location
         shutil.move(temp_output, output_path)
         
+        # Log detailed information about the created file
+        if os.path.exists(output_path):
+            file_size_bytes = os.path.getsize(output_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            
+            # Get final duration with ffprobe
+            duration_cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                output_path
+            ]
+            try:
+                duration_result = subprocess.run(duration_cmd, capture_output=True, text=True)
+                if duration_result.returncode == 0:
+                    actual_duration = float(duration_result.stdout.strip())
+                    logger.info(f"✅ Final video successfully created: {output_path}")
+                    logger.info(f"   - File size: {file_size_mb:.2f} MB ({file_size_bytes} bytes)")
+                    logger.info(f"   - Duration: {actual_duration:.2f} seconds ({actual_duration/60:.2f} minutes)")
+                else:
+                    logger.info(f"✅ Final video created: {output_path}")
+                    logger.info(f"   - File size: {file_size_mb:.2f} MB ({file_size_bytes} bytes)")
+                    logger.warning(f"   - Could not verify duration: {duration_result.stderr}")
+            except Exception as e:
+                logger.info(f"✅ Final video created: {output_path}")
+                logger.info(f"   - File size: {file_size_mb:.2f} MB ({file_size_bytes} bytes)")
+                logger.warning(f"   - Error verifying duration: {str(e)}")
+        else:
+            logger.error(f"❌ Failed to create final video: {output_path} does not exist after processing")
+        
         # Clean up temporary files
         temp_files = [concat_file, concat_output, looped_output, temp_audio]
         for i, _, _ in valid_segments:
