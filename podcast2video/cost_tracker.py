@@ -203,7 +203,49 @@ class CostTracker:
         self.total_cost += total_cost
         self.api_totals['openai']['transcription'] += total_cost
         
-        logger.debug(f"Added OpenAI transcription cost: ${total_cost:.6f} for {duration_seconds}s audio")
+        logger.debug(f"Added OpenAI transcription cost: ${total_cost:.6f} for {operation_name} using {model}")
+        return total_cost
+    
+    def add_local_transcription_cost(self, 
+                                   duration_seconds: float,
+                                   engine: str = "pocketsphinx",
+                                   operation_name: str = "transcription") -> float:
+        """
+        Track the cost of local transcription (which is free)
+        
+        Args:
+            duration_seconds (float): Audio duration in seconds
+            engine (str): The speech recognition engine used
+            operation_name (str): A descriptive name for this operation
+            
+        Returns:
+            float: The cost of this operation (always 0.0)
+        """
+        # Local transcription is free
+        total_cost = 0.0
+        
+        # Create details for this entry
+        details = {
+            'engine': engine,
+            'duration_seconds': duration_seconds,
+            'duration_minutes': duration_seconds / 60
+        }
+        
+        # Add the entry
+        entry = CostEntry(
+            api_type='local',
+            operation=operation_name,
+            cost=total_cost,
+            details=details
+        )
+        self.entries.append(entry)
+        
+        # We don't need to update totals as the cost is 0
+        # But we'll create a new category for local transcription if it doesn't exist
+        if 'local' not in self.api_totals:
+            self.api_totals['local'] = {'transcription': 0.0}
+        
+        logger.debug(f"Added local transcription entry with engine: {engine} for audio of {duration_seconds:.2f} seconds")
         return total_cost
     
     def add_stability_image_cost(self,

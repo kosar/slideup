@@ -88,6 +88,21 @@ except ImportError:
     logger.error("OpenAI library not installed. Run: pip install openai")
     OPENAI_AVAILABLE = False
 
+# Import SpeechRecognition and pocketsphinx for local transcription
+try:
+    import speech_recognition as sr
+    SPEECH_RECOGNITION_AVAILABLE = True
+except ImportError:
+    logger.error("SpeechRecognition library not installed. Run: pip install SpeechRecognition")
+    SPEECH_RECOGNITION_AVAILABLE = False
+
+try:
+    import pocketsphinx
+    POCKETSPHINX_AVAILABLE = True
+except ImportError:
+    logger.error("pocketsphinx library not installed. Run: pip install pocketsphinx")
+    POCKETSPHINX_AVAILABLE = False
+
 # List of known long-running operations that shouldn't trigger warnings
 LONG_RUNNING_OPERATIONS = [
     'rendering',
@@ -1726,8 +1741,8 @@ def convert_srt_to_vtt(srt_content):
     return vtt_content
 
 def transcribe_audio(audio_path, force_transcription=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp", limit_to_one_minute=False):
-    """Transcribe audio using OpenAI's Whisper API"""
-    debug_point("Starting audio transcription")
+    """Transcribe audio using local SpeechRecognition with pocketsphinx"""
+    debug_point("Starting audio transcription with local SpeechRecognition")
     
     # Make sure directories exist
     os.makedirs(transcript_dir, exist_ok=True)
@@ -1745,30 +1760,28 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         debug_point(f"Using existing transcription: {srt_path}")
         return srt_path
     
-    # Check if we have an OpenAI API key
-    openai_api_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_api_key:
-        logger.error("OPENAI_API_KEY environment variable not set")
+    # Check if SpeechRecognition and pocketsphinx are available
+    if not SPEECH_RECOGNITION_AVAILABLE or not POCKETSPHINX_AVAILABLE:
+        logger.error("SpeechRecognition or pocketsphinx libraries not available")
         return None
     
     # Preprocess audio if needed
-    temp_audio_path = os.path.join(temp_dir, f"temp_{audio_hash}.mp3")
+    temp_audio_path = os.path.join(temp_dir, f"temp_{audio_hash}.wav")
     
     if limit_to_one_minute:
         debug_point(f"Limiting audio to {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) for testing")
-        # Convert to mp3 and limit using ffmpeg
+        # Convert to WAV and limit using ffmpeg
         command = [
             "ffmpeg", "-y", "-i", audio_path, 
-            "-t", str(TIME_LIMIT_SECONDS), "-acodec", "libmp3lame", "-ar", "16000", "-ab", "32k", "-ac", "1",
+            "-t", str(TIME_LIMIT_SECONDS), "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             temp_audio_path
         ]
         logger.info(f"Using time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
     else:
-        # Convert to mp3 with lower bitrate that's sufficient for voice transcription
-        # Using mono audio (channels=1), 16kHz sample rate, and 32kbps bitrate
+        # Convert to WAV format suitable for SpeechRecognition
         command = [
             "ffmpeg", "-y", "-i", audio_path, 
-            "-acodec", "libmp3lame", "-ar", "16000", "-ab", "32k", "-ac", "1",
+            "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             temp_audio_path
         ]
     
@@ -1776,7 +1789,7 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         debug_point(f"Preprocessed audio saved to {temp_audio_path}")
         
-        # Get audio duration for cost estimation
+        # Get audio duration for segmentation
         audio_info = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", 
              "default=noprint_wrappers=1:nokey=1", temp_audio_path],
@@ -1786,67 +1799,132 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         )
         audio_duration = float(audio_info.stdout.strip())
         
-        # Initialize OpenAI client
-        transcription_client = OpenAI(api_key=openai_api_key)
+        # Initialize SpeechRecognition recognizer
+        recognizer = sr.Recognizer()
         
-        # Check file size before attempting transcription
-        file_size = os.path.getsize(temp_audio_path)
-        file_size_mb = file_size / (1024*1024)
-        logger.info(f"Compressed audio file size: {file_size_mb:.2f} MB")
+        # Adjust for ambient noise if the audio duration is sufficient
+        logger.info(f"Audio duration: {audio_duration} seconds")
         
-        # Check if file is still too large
-        if file_size > 25 * 1024 * 1024:  # 25 MB limit
-            logger.warning(f"Audio file still too large after compression ({file_size_mb:.2f} MB > 25 MB)")
-            logger.warning("Attempting to compress further with even lower quality")
+        # Create segments from the audio file
+        # We'll split audio into segments for better recognition
+        logger.info("Splitting audio into segments for transcription")
+        segment_length = 30  # seconds per segment, pocketsphinx works better with shorter segments
+        
+        segments = []
+        
+        # Function to transcribe a segment of audio
+        def transcribe_segment(start_time, end_time, segment_idx):
+            debug_point(f"Transcribing segment {segment_idx+1}: {start_time:.2f}s - {end_time:.2f}s")
             
-            # Try with even lower bitrate
-            temp_audio_path_extra = os.path.join(temp_dir, f"temp_extra_{audio_hash}.mp3")
-            extra_command = [
-                "ffmpeg", "-y", "-i", temp_audio_path, 
-                "-acodec", "libmp3lame", "-ar", "8000", "-ab", "16k", "-ac", "1",
-                temp_audio_path_extra
+            # Create a temporary file for this segment
+            segment_path = os.path.join(temp_dir, f"segment_{audio_hash}_{segment_idx}.wav")
+            
+            # Extract segment using ffmpeg
+            segment_cmd = [
+                "ffmpeg", "-y", "-i", temp_audio_path,
+                "-ss", str(start_time), "-to", str(end_time),
+                "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                segment_path
             ]
             
-            subprocess.run(extra_command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            # Replace the temp file with the extra compressed version
-            if os.path.exists(temp_audio_path):
-                os.remove(temp_audio_path)
-            temp_audio_path = temp_audio_path_extra
-            
-            # Check size again
-            file_size = os.path.getsize(temp_audio_path)
-            file_size_mb = file_size / (1024*1024)
-            logger.info(f"Further compressed audio file size: {file_size_mb:.2f} MB")
-            
-            # If still too large, error out
-            if file_size > 25 * 1024 * 1024:
-                logger.error(f"Audio file still too large for OpenAI's API ({file_size_mb:.2f} MB > 25 MB)")
+            try:
+                subprocess.run(segment_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Use SpeechRecognition with pocketsphinx
+                with sr.AudioFile(segment_path) as source:
+                    # Adjust for ambient noise with a short duration
+                    recognizer.adjust_for_ambient_noise(source, duration=min(1.0, end_time-start_time))
+                    audio_data = recognizer.record(source)
+                    
+                    try:
+                        # Use pocketsphinx for offline recognition
+                        text = recognizer.recognize_sphinx(audio_data)
+                        logger.info(f"Segment {segment_idx+1} recognized: {text[:30]}...")
+                        
+                        # Create segment with timestamps
+                        return {
+                            "index": segment_idx + 1,
+                            "start": start_time,
+                            "end": end_time,
+                            "text": text,
+                            "timestamp": {
+                                "start": format_timestamp(start_time),
+                                "end": format_timestamp(end_time)
+                            }
+                        }
+                    except sr.UnknownValueError:
+                        logger.warning(f"Sphinx could not understand audio in segment {segment_idx+1}")
+                        return {
+                            "index": segment_idx + 1,
+                            "start": start_time,
+                            "end": end_time,
+                            "text": "[inaudible]",
+                            "timestamp": {
+                                "start": format_timestamp(start_time),
+                                "end": format_timestamp(end_time)
+                            }
+                        }
+                    except sr.RequestError as e:
+                        logger.error(f"Sphinx error in segment {segment_idx+1}; {e}")
+                        return None
+                    finally:
+                        # Remove temporary segment file
+                        if os.path.exists(segment_path):
+                            os.remove(segment_path)
+            except Exception as e:
+                logger.error(f"Error processing segment {segment_idx+1}: {e}")
                 return None
         
-        # Perform transcription
-        debug_point("Sending audio to OpenAI for transcription")
-        with open(temp_audio_path, "rb") as audio_file:
-            response = transcription_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="srt"
-            )
+        # Determine how many segments to create
+        num_segments = max(1, int(audio_duration / segment_length))
+        logger.info(f"Splitting audio into {num_segments} segments of {segment_length}s each")
         
-        # Track API cost if cost tracker is available
+        # Create a list of start/end times for each segment
+        segment_times = []
+        for i in range(num_segments):
+            start = i * segment_length
+            end = min((i + 1) * segment_length, audio_duration)
+            segment_times.append((start, end, i))
+        
+        # Process segments in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as executor:
+            futures = []
+            for start, end, idx in segment_times:
+                future = executor.submit(transcribe_segment, start, end, idx)
+                futures.append(future)
+            
+            # Wait for all futures to complete and collect results
+            for future in futures:
+                segment = future.result()
+                if segment:
+                    segments.append(segment)
+        
+        # Sort segments by start time
+        segments.sort(key=lambda x: x["start"])
+        
+        # Convert segments to SRT format
+        debug_point("Converting transcription to SRT format")
+        srt_content = ""
+        
+        for i, segment in enumerate(segments):
+            srt_content += f"{i+1}\n"
+            srt_content += f"{segment['timestamp']['start']} --> {segment['timestamp']['end']}\n"
+            srt_content += f"{segment['text']}\n\n"
+        
+        # Track API cost if cost tracker is available (now using local transcription)
         if COST_TRACKER_AVAILABLE:
-            cost_tracker.add_openai_transcription_cost(
+            cost_tracker.add_local_transcription_cost(
                 duration_seconds=audio_duration,
-                model="whisper-1",
-                operation_name="audio_transcription"
+                engine="pocketsphinx",
+                operation_name="local_transcription"
             )
         
         # Save SRT transcription
         with open(srt_path, "w") as f:
-            f.write(response)
+            f.write(srt_content)
         
         # Convert to VTT format
-        vtt_content = convert_srt_to_vtt(response)
+        vtt_content = convert_srt_to_vtt(srt_content)
         with open(vtt_path, "w") as f:
             f.write(vtt_content)
         
@@ -2040,10 +2118,26 @@ Be sure to include a time period for which the image should be set, so it is log
     enhance_prompt = custom_enhance_prompt if custom_enhance_prompt else default_enhance_prompt
     logger.info(f"Enhance prompt length: {len(enhance_prompt)} characters")
     
-    # Client for API
+    # Client for API - Use the existing global client
     try:
-        from openai import OpenAI
-        client = OpenAI()
+        # Get the global client based on API type
+        if api_type.lower() == "openai":
+            from openai import OpenAI
+            openai_api_key = os.environ.get("OPENAI_API_KEY")
+            if not openai_api_key:
+                logger.error("OPENAI_API_KEY environment variable not set")
+                return None
+            client = OpenAI(api_key=openai_api_key)
+        elif api_type.lower() == "deepseek":
+            from openai import OpenAI
+            deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+            if not deepseek_api_key:
+                logger.error("DEEPSEEK_API_KEY environment variable not set")
+                return None
+            client = OpenAI(base_url="https://api.deepseek.com/v1", api_key=deepseek_api_key)
+        else:
+            logger.error(f"Unknown API type: {api_type}")
+            return None
     except ImportError:
         logger.error("Failed to import OpenAI client")
         return None

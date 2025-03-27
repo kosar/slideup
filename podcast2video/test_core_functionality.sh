@@ -196,7 +196,7 @@ echo "Testing with a 5-second audio file..."
 TEST_OUTPUT="$SCRIPT_DIR/test_resources/test_output.mp4"
 TEST_LOG="$SCRIPT_DIR/test_resources/test.log"
 
-# Run podcast-to-video.py with test file
+# Run podcast-to-video.py with test file - removing OpenAI API key requirement
 python3 "$SCRIPT_DIR/podcast-to-video.py" \
     --input "$TEST_AUDIO" \
     --output "$TEST_OUTPUT" \

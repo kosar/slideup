@@ -20,6 +20,9 @@ else
     exit 1
 fi
 
+# Note: OpenAI API key is no longer required for transcription
+echo "Using local transcription with SpeechRecognition and pocketsphinx"
+
 # Activate virtual environment
 VENV_PATH="$PROJECT_ROOT/podcast2video/podcast_env"
 if [ -f "$VENV_PATH/bin/activate" ]; then

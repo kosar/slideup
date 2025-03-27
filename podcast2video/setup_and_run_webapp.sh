@@ -135,6 +135,11 @@ load_api_keys() {
         set +a  # stop automatically exporting
         success "Found API keys file at: $keys_file"
         success "API keys loaded successfully"
+        # Note for OpenAI API key
+        if [ -z "$OPENAI_API_KEY" ]; then
+            warning "OPENAI_API_KEY is not set, but not required for transcription"
+            warning "Using local transcription with SpeechRecognition and pocketsphinx"
+        fi
     else
         warning "API keys file not found at: $keys_file"
         warning "Some features may not work."

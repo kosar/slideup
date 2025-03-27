@@ -73,7 +73,7 @@ else
 fi
 
 # Run transcription test
-if [ -f "$SCRIPT_DIR/test_resources/test_audio.mp3" ] && [ -n "$OPENAI_API_KEY" ]; then
+if [ -f "$SCRIPT_DIR/test_resources/test_audio.mp3" ]; then
     run_test "Transcription Test" "python -m test_transcription"
     if [ $? -eq 0 ]; then
         PASSED=$((PASSED+1))
@@ -82,7 +82,7 @@ if [ -f "$SCRIPT_DIR/test_resources/test_audio.mp3" ] && [ -n "$OPENAI_API_KEY" 
     fi
     TOTAL=$((TOTAL+1))
 else
-    echo -e "${YELLOW}Skipping Transcription Test - Missing test_audio.mp3 or OPENAI_API_KEY${NC}"
+    echo -e "${YELLOW}Skipping Transcription Test - Missing test_audio.mp3${NC}"
 fi
 
 # Run debugging tests
@@ -94,8 +94,8 @@ else
 fi
 TOTAL=$((TOTAL+1))
 
-# Run core functionality test if all required API keys are available
-if [ -n "$OPENAI_API_KEY" ] && [ -n "$STABILITY_API_KEY" ]; then
+# Run core functionality test if stability API key is available
+if [ -n "$STABILITY_API_KEY" ]; then
     run_test "Core Functionality Test" "bash test_core_functionality.sh"
     if [ $? -eq 0 ]; then
         PASSED=$((PASSED+1))
@@ -104,8 +104,8 @@ if [ -n "$OPENAI_API_KEY" ] && [ -n "$STABILITY_API_KEY" ]; then
     fi
     TOTAL=$((TOTAL+1))
 else
-    echo -e "${YELLOW}Skipping Core Functionality Test - Missing API keys${NC}"
-    echo -e "${YELLOW}Expected keys: OPENAI_API_KEY, STABILITY_API_KEY${NC}"
+    echo -e "${YELLOW}Skipping Core Functionality Test - Missing STABILITY_API_KEY${NC}"
+    echo -e "${YELLOW}Expected keys: STABILITY_API_KEY${NC}"
 fi
 
 # Display summary
