@@ -83,6 +83,22 @@
                                         </div>
                                     </div>
                                 </div>
+                                
+                                <div class="accordion-item mt-3">
+                                    <h2 class="accordion-header" id="headingNegativePrompt">
+                                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseNegativePrompt" aria-expanded="false" aria-controls="collapseNegativePrompt">
+                                            Negative Prompts
+                                        </button>
+                                    </h2>
+                                    <div id="collapseNegativePrompt" class="accordion-collapse collapse" aria-labelledby="headingNegativePrompt" data-bs-parent="#promptsAccordion">
+                                        <div class="accordion-body">
+                                            <div class="form-group">
+                                                <p class="text-muted">These negative prompts are used to avoid unwanted elements in generated images.</p>
+                                                <textarea class="form-control" name="negative_prompts" rows="8">{{ prompts.negative_prompts }}</textarea>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                             
                             <div class="d-grid gap-2 mt-4">

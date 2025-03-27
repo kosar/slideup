@@ -10,6 +10,7 @@ from werkzeug.utils import secure_filename
 import threading
 from datetime import datetime
 import traceback
+import re
 
 # Add the parent directory to sys.path - needed for finding the podcast-to-video.py script
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -67,14 +68,24 @@ Your task is to analyze this podcast segment and provide a JSON response with th
 
 {
     "description": "A clear, concise description of the main topic",
-    "visual_prompt": "A detailed visual prompt for generating an image that represents this content, with an eye towards interesting facts and specifics from the content with key points identified (as many as you see fit).",
+    "visual_prompt": "In [EPOCH_TIME], a detailed scene showing...",
     "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point N"],
     "epoch_time": "A description of the period in time and approximate location down to the continent level to help set the period for context and will be used by downstream processors."
 }
 
-The visual prompt should be detailed and specific, focusing on visual elements that would make a compelling image. 
-Include details like style, composition, colors, and elements to include in the image. Be sure to include a time period for which the image should be set, so it is logically aligned with the topic and the period in time that the topic is set in as appropriate and possible to discern from this content. If there are hints you can provide that further sets the tone and mood of the setting that helps the image creation be true to the intention of the discussion so it feels natural to the viewer.""",
-    'visual_generation': "A high quality, detailed image that uses creative imagery that is highly realistic especially when it comes to humans, being sure the human depictions are true to the natural human form and being very careful to depict imagery set in a specific time period that is aligned with the description below so it fits together naturally between the narrative and the visual imagery, of the following scene: "
+The visual prompt should be detailed and specific, focusing on visual elements that would make a compelling image.
+Include details like style, composition, colors, and elements to include in the image. 
+
+IMPORTANT: The visual_prompt MUST start with "In [EPOCH_TIME]," where [EPOCH_TIME] is replaced with the actual time period relevant to the content. For example, "In ancient Greece, 5th century BCE," or "In 1960s America,". This ensures the generated image properly represents the correct historical context.
+
+Be sure to include a time period for which the image should be set, so it is logically aligned with the topic and the period in time that the topic is set in as appropriate and possible to discern from this content. If there are hints you can provide that further sets the tone and mood of the setting that helps the image creation be true to the intention of the discussion so it feels natural to the viewer.""",
+    'visual_generation': "A high quality, detailed image with creative and realistic imagery that accurately reflects the specific time period described below, ensuring the visual elements align naturally with the narrative context of the following scene:",
+    'negative_prompts': """nude, naked, nsfw, 3d render, cartoon, anime, drawing, painting, crayon, sketch, graphite, impressionist, noisy, blurry, soft, deformed, distorted
+obese, disfigured, deformed, low quality, ugly, duck face, duck lips, unnatural skin tone
+bad anatomy, missing fingers, extra appendages, poorly drawn face, mutation
+closeup of face, portrait of teenager, portrait of a child, portrait of a minor
+disturbed face, shocked face, angry face, insane face, evil face, old face, wrinkled face
+adult with childlike proportions, midget, dwarf"""
 }
 
 # Background processes tracking
@@ -127,7 +138,7 @@ def get_task_status(task_id):
     return {'status': 'unknown', 'message': 'Task not found'}
 
 def process_audio_file_background(task_id, input_file, output_file, limit_to_one_minute=False, non_interactive=True, 
-                                enhance_prompt=None, visual_prompt=None):
+                                enhance_prompt=None, visual_prompt=None, negative_prompts=None):
     """Background processing of the audio file"""
     try:
         # Initialize task status
@@ -153,6 +164,91 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
             'message': 'Processing audio...'
         })
         
+        # Prepare environment variables
+        custom_env = os.environ.copy()
+        
+        # Track if we're using custom prompts - either from parameters (web UI) or existing environment variables
+        using_custom_enhance = False
+        using_custom_visual = False
+        using_custom_negative = False
+        
+        # Track prompt sources for logs
+        enhance_source = "default"
+        visual_source = "default"
+        negative_source = "default"
+        
+        # Check for custom enhance prompt (web interface takes precedence over environment)
+        if enhance_prompt is not None:
+            # Compare to default using normalized text
+            if normalize_prompt_text(enhance_prompt) != normalize_prompt_text(DEFAULT_PROMPTS['enhance_segments']):
+                # This means it was customized in the web interface
+                custom_env['CUSTOM_ENHANCE_PROMPT'] = enhance_prompt
+                logger.info(f"Using custom enhance prompt from web interface (different from default): {enhance_prompt[:50]}...")
+                processing_tasks[task_id]['logs'].append(f"Using custom enhance prompt from web interface")
+                using_custom_enhance = True
+                enhance_source = "web interface"
+            else:
+                logger.info("Enhance prompt from web interface matches default (not using as custom)")
+        elif 'CUSTOM_ENHANCE_PROMPT' in custom_env:
+            # Environment variable was already set (system-wide)
+            logger.info(f"Using pre-existing enhance prompt from environment variable")
+            processing_tasks[task_id]['logs'].append(f"Using enhance prompt from environment variable")
+            using_custom_enhance = True
+            enhance_source = "environment variable"
+        else:
+            logger.info("Using default enhance prompt")
+            processing_tasks[task_id]['logs'].append("Using default enhance prompt")
+            
+        # Check for custom visual prompt (web interface takes precedence over environment)
+        if visual_prompt is not None:
+            # Compare to default using normalized text
+            if normalize_prompt_text(visual_prompt) != normalize_prompt_text(DEFAULT_PROMPTS['visual_generation']):
+                # This means it was customized in the web interface
+                custom_env['CUSTOM_VISUAL_PREFIX'] = visual_prompt
+                logger.info(f"Using custom visual prompt from web interface (different from default): {visual_prompt[:50]}...")
+                processing_tasks[task_id]['logs'].append(f"Using custom visual prompt from web interface")
+                using_custom_visual = True
+                visual_source = "web interface"
+            else:
+                logger.info("Visual prompt from web interface matches default (not using as custom)")
+        elif 'CUSTOM_VISUAL_PREFIX' in custom_env:
+            # Environment variable was already set (system-wide)
+            logger.info(f"Using pre-existing visual prompt from environment variable")
+            processing_tasks[task_id]['logs'].append(f"Using visual prompt from environment variable")
+            using_custom_visual = True
+            visual_source = "environment variable"
+        else:
+            logger.info("Using default visual prompt")
+            processing_tasks[task_id]['logs'].append("Using default visual prompt")
+            
+        # Check for custom negative prompts
+        if negative_prompts is not None:
+            # Compare to default using normalized text
+            if normalize_prompt_text(negative_prompts) != normalize_prompt_text(DEFAULT_PROMPTS['negative_prompts']):
+                # This means it was customized in the web interface
+                custom_env['CUSTOM_NEGATIVE_PROMPTS'] = negative_prompts
+                logger.info(f"Using custom negative prompts from web interface (different from default): {negative_prompts[:50]}...")
+                processing_tasks[task_id]['logs'].append(f"Using custom negative prompts from web interface")
+                using_custom_negative = True
+                negative_source = "web interface"
+            else:
+                logger.info("Negative prompts from web interface match default (not using as custom)")
+        elif 'CUSTOM_NEGATIVE_PROMPTS' in custom_env:
+            # Environment variable was already set (system-wide)
+            logger.info(f"Using pre-existing negative prompts from environment variable: {custom_env['CUSTOM_NEGATIVE_PROMPTS'][:50]}...")
+            processing_tasks[task_id]['logs'].append(f"Using negative prompts from environment variable")
+            using_custom_negative = True
+            negative_source = "environment variable"
+        else:
+            # Using default negative prompts
+            logger.info(f"Using default negative prompts: {DEFAULT_PROMPTS['negative_prompts'][:50]}...")
+            processing_tasks[task_id]['logs'].append(f"Using default negative prompts")
+        
+        # Log the prompt customization status
+        prompt_sources_message = f"Prompt sources: enhance={enhance_source}, visual={visual_source}, negative={negative_source}"
+        logger.info(prompt_sources_message)
+        processing_tasks[task_id]['logs'].append(prompt_sources_message)
+        
         # Call the podcast-to-video.py script directly
         logger.info(f"Starting processing task {task_id} using subprocess")
         
@@ -175,7 +271,8 @@ def process_audio_file_background(task_id, input_file, output_file, limit_to_one
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
-            bufsize=1
+            bufsize=1,
+            env=custom_env  # Use our custom environment with prompts
         )
         
         # Store process for potential cancellation
@@ -398,11 +495,37 @@ def index():
     """Main page with file upload form"""
     return render_template('index.html')
 
+def normalize_prompt_text(text):
+    """Normalize prompt text to avoid false positives when comparing prompts.
+    Strips whitespace, normalizes line endings, and removes extra spaces."""
+    if not text:
+        return ""
+    # Replace all whitespace sequences (including newlines) with a single space
+    normalized = re.sub(r'\s+', ' ', text.strip())
+    return normalized
+
 @app.route('/config')
 def config_page():
     """Configuration page for API keys and prompts"""
     # Get current prompts from session or use defaults
-    prompts = session.get('prompts', DEFAULT_PROMPTS)
+    prompts = session.get('prompts', DEFAULT_PROMPTS.copy())
+    
+    # Ensure all keys from DEFAULT_PROMPTS exist in prompts (for backward compatibility)
+    for key in DEFAULT_PROMPTS:
+        if key not in prompts:
+            prompts[key] = DEFAULT_PROMPTS[key]
+            logger.info(f"Added missing default prompt key '{key}' to session")
+    
+    # Save the updated prompts back to session
+    session['prompts'] = prompts
+    
+    # Use the normalize_prompt_text function to compare prompts
+    enhance_status = 'custom' if normalize_prompt_text(prompts['enhance_segments']) != normalize_prompt_text(DEFAULT_PROMPTS['enhance_segments']) else 'default'
+    visual_status = 'custom' if normalize_prompt_text(prompts['visual_generation']) != normalize_prompt_text(DEFAULT_PROMPTS['visual_generation']) else 'default'
+    negative_status = 'custom' if normalize_prompt_text(prompts['negative_prompts']) != normalize_prompt_text(DEFAULT_PROMPTS['negative_prompts']) else 'default'
+    
+    logger.info(f"Loaded config page with prompts - enhance: {enhance_status}, visual: {visual_status}, negative: {negative_status}")
+    
     api_keys = {
         'openai_api_key': os.environ.get('OPENAI_API_KEY', ''),
         'stability_api_key': os.environ.get('STABILITY_API_KEY', '')
@@ -414,16 +537,55 @@ def save_config():
     """Save configuration settings"""
     try:
         # Get current prompts
-        prompts = session.get('prompts', DEFAULT_PROMPTS.copy())
+        old_prompts = session.get('prompts', DEFAULT_PROMPTS.copy())
+        prompts = old_prompts.copy()
+        
+        # Track which prompts changed
+        changes = []
         
         # Update prompts from form
         if 'enhance_segments' in request.form:
+            # Use normalized comparison to detect real changes
+            old_normalized = normalize_prompt_text(old_prompts.get('enhance_segments', ''))
+            new_normalized = normalize_prompt_text(request.form['enhance_segments'])
+            if old_normalized != new_normalized:
+                changes.append('enhance_segments')
+                logger.info("Enhancement prompt actually changed (normalized comparison)")
             prompts['enhance_segments'] = request.form['enhance_segments']
+            
         if 'visual_generation' in request.form:
+            # Use normalized comparison to detect real changes
+            old_normalized = normalize_prompt_text(old_prompts.get('visual_generation', ''))
+            new_normalized = normalize_prompt_text(request.form['visual_generation'])
+            if old_normalized != new_normalized:
+                changes.append('visual_generation')
+                logger.info("Visual generation prompt actually changed (normalized comparison)")
             prompts['visual_generation'] = request.form['visual_generation']
+            
+        if 'negative_prompts' in request.form:
+            # Use normalized comparison to detect real changes
+            old_normalized = normalize_prompt_text(old_prompts.get('negative_prompts', ''))
+            new_normalized = normalize_prompt_text(request.form['negative_prompts'])
+            if old_normalized != new_normalized:
+                changes.append('negative_prompts')
+                
+                # Count the negative prompts for better logging
+                old_count = len([line for line in old_prompts.get('negative_prompts', '').split('\n') if line.strip()])
+                new_count = len([line for line in request.form['negative_prompts'].split('\n') if line.strip()])
+                logger.info(f"Negative prompts changed: {old_count} items → {new_count} items")
+                logger.info("Negative prompts actually changed (normalized comparison)")
+            else:
+                logger.info("Negative prompts submitted but no actual change (normalized comparison)")
+                
+            prompts['negative_prompts'] = request.form['negative_prompts']
         
         # Save prompts to session
         session['prompts'] = prompts
+        
+        if changes:
+            logger.info(f"Saved configuration changes for: {', '.join(changes)}")
+        else:
+            logger.info("Saved configuration (no changes detected)")
         
         # We don't update API keys here as they should be set in the environment
         # Flash a notice about this
@@ -431,6 +593,7 @@ def save_config():
         
         return redirect(url_for('config_page'))
     except Exception as e:
+        logger.error(f"Error saving configuration: {str(e)}")
         flash(f'Error saving configuration: {str(e)}', 'error')
         return redirect(url_for('config_page'))
 
@@ -479,10 +642,38 @@ def upload_file():
             limit_to_one_minute = 'limit_to_one_minute' in request.form
             non_interactive = True  # Always non-interactive for web app
             
-            # Get custom prompts if provided
+            # Get custom prompts if provided and check if they're different from defaults
             prompts = session.get('prompts', DEFAULT_PROMPTS)
-            enhance_prompt = prompts.get('enhance_segments', DEFAULT_PROMPTS['enhance_segments'])
-            visual_prompt = prompts.get('visual_generation', DEFAULT_PROMPTS['visual_generation'])
+            
+            # Only pass non-default prompts
+            enhance_prompt = None
+            visual_prompt = None
+            negative_prompts = None
+            
+            # Check if enhancement prompt is customized (using normalized comparison)
+            if normalize_prompt_text(prompts.get('enhance_segments', '')) != normalize_prompt_text(DEFAULT_PROMPTS['enhance_segments']):
+                enhance_prompt = prompts.get('enhance_segments')
+                logger.info("Using custom enhancement prompt from session (user-modified)")
+            else:
+                logger.info("Using default enhancement prompt (not customized)")
+                
+            # Check if visual generation prompt is customized (using normalized comparison)
+            if normalize_prompt_text(prompts.get('visual_generation', '')) != normalize_prompt_text(DEFAULT_PROMPTS['visual_generation']):
+                visual_prompt = prompts.get('visual_generation')
+                logger.info("Using custom visual generation prompt from session (user-modified)")
+            else:
+                logger.info("Using default visual generation prompt (not customized)")
+                    
+            # Check if negative prompts are customized (using normalized comparison)
+            if normalize_prompt_text(prompts.get('negative_prompts', '')) != normalize_prompt_text(DEFAULT_PROMPTS['negative_prompts']):
+                negative_prompts = prompts.get('negative_prompts')
+                prompt_count = len([line for line in negative_prompts.split('\n') if line.strip()])
+                logger.info(f"Using custom negative prompts from session (user-modified) with {prompt_count} items")
+                logger.info(f"First few negative prompts: {', '.join(negative_prompts.split('\n')[:3])}")
+            else:
+                default_prompt_count = len([line for line in DEFAULT_PROMPTS['negative_prompts'].split('\n') if line.strip()])
+                logger.info(f"Using default negative prompts with {default_prompt_count} items")
+                logger.info("Negative prompts not customized")
             
             # Set up output path
             os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
@@ -492,7 +683,7 @@ def upload_file():
             logger.info("Starting background processing")
             processing_thread = threading.Thread(
                 target=process_audio_file_background,
-                args=(task_id, file_path, output_file, limit_to_one_minute, non_interactive, enhance_prompt, visual_prompt)
+                args=(task_id, file_path, output_file, limit_to_one_minute, non_interactive, enhance_prompt, visual_prompt, negative_prompts)
             )
             processing_thread.daemon = True
             processing_thread.start()
@@ -535,11 +726,18 @@ def status(task_id):
         except (ValueError, TypeError):
             formatted_status['end_time'] = None
     
+    # Ensure cost_data is present to avoid template errors
+    if 'cost_data' not in formatted_status:
+        formatted_status['cost_data'] = DEFAULT_COST_DATA.copy()
+    
     return render_template('status.html', task_id=task_id, status=formatted_status)
 
 @app.route('/api/status/<task_id>')
 def api_status(task_id):
     """API endpoint for getting task status"""
+    # Don't log status checks to reduce log clutter
+    # This endpoint is called frequently by the client polling
+    
     task_status = get_task_status(task_id)
     if task_status['status'] == 'unknown':
         return jsonify({'error': 'Task not found'}), 404

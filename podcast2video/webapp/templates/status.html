@@ -52,10 +52,10 @@
                         <div class="progress mb-4" style="height: 25px;">
                             <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" 
                                 role="progressbar" 
-                                style="width: {{ status.progress }}%;" 
-                                aria-valuenow="{{ status.progress }}" 
+                                style="width: {% if status and status.progress %}{{ status.progress }}{% else %}0{% endif %}%;" 
+                                aria-valuenow="{% if status and status.progress %}{{ status.progress }}{% else %}0{% endif %}" 
                                 aria-valuemin="0" 
-                                aria-valuemax="100">{{ status.progress }}%</div>
+                                aria-valuemax="100">{% if status and status.progress %}{{ status.progress }}{% else %}0{% endif %}%</div>
                         </div>
                         
                         <div id="status-details" class="mb-4">
@@ -203,7 +203,7 @@
         const taskId = "{{ task_id }}";
         const statusUrl = "/api/status/" + taskId;
         let pollInterval;
-        let lastLogCount = {{ status.logs | length }};
+        let lastLogCount = {% if status and status.logs %}{{ status.logs | length }}{% else %}0{% endif %};
         let startTime = new Date().getTime();
         
         function formatCost(cost) {
@@ -379,8 +379,8 @@
             // Initial check of status
             updateStatus();
             
-            // Set up polling every 1 second
-            pollInterval = setInterval(updateStatus, 1000);
+            // Set up polling every 5 seconds instead of 1 second to reduce server load
+            pollInterval = setInterval(updateStatus, 5000);
             
             // Stop polling after 30 minutes (prevents runaway polling)
             setTimeout(() => {

@@ -23,6 +23,7 @@ import wave
 import shutil
 from datetime import datetime
 import numpy as np
+import inspect
 
 # Import cost tracker
 try:
@@ -650,7 +651,7 @@ except Exception as e:
 # Initialize Stability API for images
 stability_api = None  # Initialize as None by default
 
-def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=50, samples=1, non_interactive=False):
+def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=50, samples=1, non_interactive=False, negative_prompt=None):
     """Generate an image using Stability API"""
     debug_point(f"Generating image for: {prompt[:50]}...")
     
@@ -668,6 +669,27 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
         logger.error("STABILITY_API_KEY not found in environment variables")
         return None
     
+    # Perform a secondary validation using Deepseek if directly calling this function
+    # This ensures safety even when generate_image_stability is called directly
+    try:
+        # Only validate if we haven't already done so in generate_visuals
+        is_direct_call = inspect.currentframe().f_back.f_code.co_name != "generate_visuals"
+        if is_direct_call:
+            logger.info("Direct call to generate_image_stability detected, performing prompt validation")
+            is_safe, validated_prompt, validated_negative_prompt, reason = validate_image_prompt_with_deepseek(
+                prompt, 
+                negative_prompt
+            )
+            
+            if not is_safe:
+                logger.warning(f"Direct prompt validation detected potential issues: {reason}")
+                prompt = validated_prompt
+                negative_prompt = validated_negative_prompt
+                logger.info(f"Using corrected prompts from validation")
+    except Exception as e:
+        # Don't block generation if validation fails
+        logger.error(f"Error in direct prompt validation: {str(e)}")
+    
     # This is the URL for text-to-image generation
     model_id = "stable-diffusion-xl-1024-v1-0"
     url = f"https://api.stability.ai/v1/generation/{model_id}/text-to-image"
@@ -679,21 +701,57 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
         "Authorization": f"Bearer {stability_key}"
     }
     
+    # Prepare the text prompts section with positive and negative prompts
+    text_prompts = [
+        {
+            "text": prompt,
+            "weight": 1.0
+        }
+    ]
+    
+    # Add negative prompt if provided
+    if negative_prompt:
+        text_prompts.append({
+            "text": negative_prompt,
+            "weight": -0.8  # Negative weight for things to avoid
+        })
+        logger.info(f"Added negative prompt to request: {negative_prompt[:100]}...")
+        logger.info(f"Negative prompt length: {len(negative_prompt)} characters")
+        logger.info(f"Negative prompt weight: -0.8")
+        
+        # Log each individual negative prompt term for debugging
+        negative_items = [item.strip() for item in negative_prompt.split(',') if item.strip()]
+        logger.info(f"Negative prompt contains {len(negative_items)} individual terms")
+        for i, item in enumerate(negative_items[:10]):  # Log first 10 items to avoid log spam
+            logger.info(f"  Negative term {i+1}: '{item}'")
+        if len(negative_items) > 10:
+            logger.info(f"  ... and {len(negative_items) - 10} more negative terms")
+    else:
+        logger.warning("No negative prompt provided! This may result in inappropriate images.")
+    
     # Prepare body
     body = {
-        "text_prompts": [
-            {
-                "text": prompt,
-                "weight": 1.0
-            }
-        ],
+        "text_prompts": text_prompts,
         "height": height,
         "width": width,
         "samples": samples,
         "steps": steps,
-        "cfg_scale": 7,  # Guidance scale - higher means more adherence to prompt
+        "cfg_scale": 8.0,  # Increased guidance scale for better prompt adherence
         "style_preset": "photographic"  # Can be changed based on style preference
     }
+    
+    # Log the complete request body for debugging
+    logger.info(f"Stability API request configuration: {json.dumps(body, indent=2)}")
+    
+    # Create more detailed log of exact prompt text for troubleshooting
+    detailed_prompt_log = {
+        "prompt_full_text": prompt,
+        "prompt_length": len(prompt),
+        "negative_prompt_full_text": negative_prompt,
+        "negative_prompt_length": len(negative_prompt) if negative_prompt else 0,
+        "negative_prompt_items_count": len([x for x in negative_prompt.split(',') if x.strip()]) if negative_prompt else 0
+    }
+    logger.info(f"DETAILED PROMPT LOG: {json.dumps(detailed_prompt_log, indent=2)}")
     
     try:
         response = requests.post(url, headers=headers, json=body)
@@ -704,6 +762,19 @@ def generate_image_stability(prompt, output_path, width=1024, height=1024, steps
         
         # Parse response
         data = response.json()
+        
+        # Log successful image generation
+        logger.info(f"Stability API request successful - generated {len(data.get('artifacts', []))} images")
+        
+        # Check for any issues in the response
+        if 'artifacts' in data:
+            for i, artifact in enumerate(data['artifacts']):
+                if 'finish_reason' in artifact:
+                    finish_reason = artifact['finish_reason'] 
+                    if finish_reason != 'SUCCESS':
+                        logger.warning(f"Image {i+1} generation had finish_reason: {finish_reason}")
+                        if finish_reason == 'CONTENT_FILTERED':
+                            logger.warning("Content was filtered despite negative prompts! Adjust negative prompts if this happens frequently.")
         
         # Track API cost if cost tracker is available
         if COST_TRACKER_AVAILABLE:
@@ -1922,159 +1993,219 @@ def parse_timestamp(timestamp):
         return 0
 
 def enhance_segments(segments, limit_to_one_minute=False):
-    """Enhance segments with AI-generated descriptions and visual prompts"""
-    debug_point("Enhancing segments with detailed descriptions and visuals")
+    """Enhance segments with AI descriptions and visual prompts"""
+    debug_point("Starting segment enhancement process")
     
-    # Check if we have segments to enhance
-    if not segments:
-        logger.error("No segments provided for enhancement")
-        return []
+    # Use global variables for API type and model
+    global api_type, chat_model
     
-    # Limit the number of segments for testing
-    if limit_to_one_minute:
-        # Find segments that would fit within the time limit
-        limited_segments = []
-        total_duration = 0
-        for segment in segments:
-            segment_duration = segment['end'] - segment['start']
-            if segment['start'] >= TIME_LIMIT_SECONDS:
-                # Skip segments that start after the time limit
-                break
-            
-            # Add this segment (potentially with trimmed end time)
-            segment_end = min(segment['end'], TIME_LIMIT_SECONDS)
-            adjusted_duration = segment_end - segment['start']
-            if adjusted_duration > 0:
-                limited_segments.append(segment)
-                total_duration += adjusted_duration
-                if segment_end >= TIME_LIMIT_SECONDS:
-                    # We've reached the time limit
-                    break
-        
-        logger.info(f"Limiting to {len(limited_segments)} segments to fit TIME_LIMIT_SECONDS={TIME_LIMIT_SECONDS}")
-        logger.info(f"Limited segments cover approximately {total_duration:.2f} seconds")
-        segments = limited_segments
-    
-    # Check if we have a valid chat model
-    global chat_model
-    if not chat_model:
-        logger.error("No valid chat model available")
-        return segments
-    
-    # Initialize OpenAI Client
-    openai_api_key = os.environ.get("OPENAI_API_KEY")
-    deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
-    
-    if not (openai_api_key or deepseek_api_key):
-        logger.error("No API keys available")
-        return segments
-    
-    # Use DeepSeek if available, otherwise OpenAI
-    if deepseek_api_key:
-        ai_client = OpenAI(
-            api_key=deepseek_api_key,
-            base_url="https://api.deepseek.com/v1"
-        )
+    # Get custom enhance prompt from environment if available
+    custom_enhance_prompt = os.environ.get("CUSTOM_ENHANCE_PROMPT")
+    if custom_enhance_prompt:
+        logger.info(f"Using custom enhance prompt from environment variable: {custom_enhance_prompt[:100]}...")
     else:
-        ai_client = OpenAI(api_key=openai_api_key)
+        logger.info("Using default enhance prompt")
     
+    # Initialize segment cache if not already initialized
+    if not hasattr(enhance_segments, "segment_cache"):
+        enhance_segments.segment_cache = {}
+    
+    # Check if we have a valid API type and model
+    if not api_type or not chat_model:
+        logger.error("No valid API type or chat model available")
+        return None
+    
+    # Log which API we're using
+    logger.info(f"Using {api_type.upper()} API with model {chat_model} for enhancements")
+    
+    # Default prompt template for segment enhancement
+    default_enhance_prompt = """You are a helpful assistant that analyzes podcast segments and provides structured descriptions and visual prompts.
+Your task is to analyze this podcast segment and provide a JSON response with the following structure:
+
+{
+    "description": "A clear, concise description of the main topic",
+    "visual_prompt": "In [EPOCH_TIME], a detailed scene showing...",
+    "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point N"],
+    "epoch_time": "A description of the period in time and approximate location down to the continent level to help set the period for context and will be used by downstream processors."
+}
+
+The visual prompt should be detailed and specific, focusing on visual elements that would make a compelling image.
+Include details like style, composition, colors, and elements to include in the image. 
+
+IMPORTANT: The visual_prompt MUST start with "In [EPOCH_TIME]," where [EPOCH_TIME] is replaced with the actual time period relevant to the content. For example, "In ancient Greece, 5th century BCE," or "In 1960s America,". This ensures the generated image properly represents the correct historical context.
+
+Be sure to include a time period for which the image should be set, so it is logically aligned with the topic and the period in time that the topic is set in as appropriate and possible to discern from this content. If there are hints you can provide that further sets the tone and mood of the setting that helps the image creation be true to the intention of the discussion so it feels natural to the viewer."""
+    
+    # Use custom enhance prompt if available, otherwise use default
+    enhance_prompt = custom_enhance_prompt if custom_enhance_prompt else default_enhance_prompt
+    logger.info(f"Enhance prompt length: {len(enhance_prompt)} characters")
+    
+    # Client for API
+    try:
+        from openai import OpenAI
+        client = OpenAI()
+    except ImportError:
+        logger.error("Failed to import OpenAI client")
+        return None
+    
+    # Enhanced segments to return
     enhanced_segments = []
     
-    # Process each segment
-    for i, segment in enumerate(segments):
-        debug_point(f"Enhancing segment {i+1}/{len(segments)}")
-        check_cancel()
+    # Get how many segments to process
+    if limit_to_one_minute:
+        segments_to_process = []
+        total_duration = 0
         
+        for segment in segments:
+            segment_duration = segment["end"] - segment["start"]
+            if total_duration + segment_duration <= TIME_LIMIT_SECONDS:
+                segments_to_process.append(segment)
+                total_duration += segment_duration
+            else:
+                break
+        
+        # Use the limited segments
+        logger.info(f"Time limit mode: Processing {len(segments_to_process)} of {len(segments)} segments (time limit: {TIME_LIMIT_SECONDS} seconds)")
+        segments = segments_to_process
+    
+    # Process each segment
+    for i, segment in enumerate(segments, 1):
         try:
-            # Create the prompt for this segment
-            prompt = f"""Analyze this podcast segment transcript and provide a rich description and visual prompt.
-Transcript: "{segment['text']}"
-
-Provide your response in JSON format:
-{{
-    "description": "A clear, concise description of what's being discussed",
-    "visual_prompt": "A detailed visual prompt for generating an image",
-    "key_points": ["Key point 1", "Key point 2", "Key point 3"]
-}}
-
-For the visual prompt, focus on creating an engaging, representative image that captures the essence of this segment. 
-Provide specific details about what should be in the image, visual style, colors, composition, etc."""
+            logger.info(f"Enhancing segment {i}/{len(segments)}")
+            logger.info(f"Segment text: {segment['text']}")
             
-            # Make API call with timeout
-            response = ai_client.chat.completions.create(
-                model=chat_model,  # Use the global chat model
-                messages=[
-                    {"role": "system", "content": "You're an expert at analyzing podcast segments and creating visual representations."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=800
+            # Compute cache key for current segment
+            cache_key = get_cache_key(segment['text'])
+            
+            # Check if segment is in cache
+            if cache_key in enhance_segments.segment_cache:
+                logger.info("Found segment in cache, using cached enhancement")
+                enhanced_segment = enhance_segments.segment_cache[cache_key].copy()
+                # Update start and end times to match the current segment
+                enhanced_segment['start'] = segment['start']
+                enhanced_segment['end'] = segment['end']
+                enhanced_segments.append(enhanced_segment)
+                continue
+            
+            # Check if we should cancel
+            if check_cancel():
+                logger.info("Enhancement cancelled by user")
+                return None
+            
+            # Format prompt for this segment
+            prompt_text = f"{enhance_prompt}\n\nHere is the podcast segment to analyze:\n\"{segment['text']}\""
+            
+            # Get enhancement from the appropriate API
+            logger.info(f"Requesting enhancement from {api_type.upper()} for segment {i}")
+            completion_result = with_timeout(
+                func=client.chat.completions.create,
+                kwargs={
+                    "model": chat_model,  # Use the global chat model instead of hardcoding
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "temperature": 0.2,
+                    "timeout": 60  # 60 second timeout
+                },
+                timeout_seconds=70,  # 70 second timeout (with buffer)
+                description=f"{api_type.upper()} enhancement for segment {i}"
             )
             
-            # Track API cost if cost tracker is available
-            if COST_TRACKER_AVAILABLE:
-                input_tokens = response.usage.prompt_tokens
-                output_tokens = response.usage.completion_tokens
-                cost_tracker.add_openai_chat_cost(
-                    model=chat_model,  # Use the global chat model
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    operation_name="enhance_segment"
-                )
+            if not completion_result:
+                logger.error(f"Failed to enhance segment {i}: Timeout")
+                return None
             
-            # Extract the text from the response
-            response_text = response.choices[0].message.content.strip()
+            # Extract the actual completion object from the result
+            # If it's a tuple, the first element should be the API response
+            if isinstance(completion_result, tuple):
+                completion = completion_result[0]
+            else:
+                completion = completion_result
             
-            # Parse the JSON response
+            # Parse the response
+            response_text = completion.choices[0].message.content
+            
+            # Try to extract JSON
             try:
-                # Sometimes GPT adds backticks or other formatting - this cleans it up
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].strip()
+                # Extract JSON from response
+                json_match = re.search(r'({[\s\S]*})', response_text)
+                if not json_match:
+                    logger.error(f"Failed to extract JSON from response for segment {i}")
+                    logger.error(f"Response: {response_text}")
+                    return None
                 
-                # Parse the cleaned JSON
-                enhancement = json.loads(response_text)
+                json_text = json_match.group(1)
+                enhancement = json.loads(json_text)
                 
-                # Update the segment with AI-generated content
-                enhanced_segment = segment.copy()
-                enhanced_segment['description'] = enhancement.get('description', '')
-                enhanced_segment['visual_prompt'] = enhancement.get('visual_prompt', '')
-                enhanced_segment['key_points'] = enhancement.get('key_points', [])
+                # Log the extracted enhancement
+                logger.info(f"Successfully enhanced segment {i}")
+                logger.info(f"Description: {enhancement.get('description', '')[:100]}...")
+                logger.info(f"Epoch time: {enhancement.get('epoch_time', '')}")
                 
-                # Add some additional required fields
-                enhanced_segment['image_path'] = None  # This will be filled later
-                enhanced_segment['processing_complete'] = False
+                # Check visual prompt structure
+                visual_prompt = enhancement.get('visual_prompt', '')
+                logger.info(f"Original visual prompt: {visual_prompt[:100]}...")
                 
+                # Verify the visual_prompt format (should start with "In [EPOCH_TIME],")
+                if not visual_prompt.startswith("In "):
+                    logger.warning(f"Visual prompt may not follow required format (should start with 'In [EPOCH_TIME],')")
+                    epoch_time = enhancement.get('epoch_time', 'modern times')
+                    # Try to fix it if possible
+                    if "," in visual_prompt:
+                        # Try to preserve text after first comma
+                        fixed_prompt = f"In {epoch_time}, {visual_prompt.split(',', 1)[1].strip()}"
+                    else:
+                        # Just prepend the epoch time
+                        fixed_prompt = f"In {epoch_time}, {visual_prompt}"
+                    
+                    logger.info(f"Fixed visual prompt: {fixed_prompt[:100]}...")
+                    enhancement['visual_prompt'] = fixed_prompt
+                
+                # Create the enhanced segment
+                enhanced_segment = {
+                    'text': segment['text'],
+                    'start': segment['start'],
+                    'end': segment['end'],
+                    'description': enhancement.get('description', ''),
+                    'visual_prompt': enhancement.get('visual_prompt', ''),
+                    'key_points': enhancement.get('key_points', []),
+                    'epoch_time': enhancement.get('epoch_time', '')
+                }
+                
+                # Add to cache
+                enhance_segments.segment_cache[cache_key] = enhanced_segment.copy()
+                
+                # Add to results
                 enhanced_segments.append(enhanced_segment)
+                logger.info(f"Enhanced segment {i} with {len(enhanced_segment['key_points'])} key points")
                 
-                logger.info(f"Enhanced segment {i+1} with AI-generated content")
+                # Track API cost if cost tracker is available
+                if COST_TRACKER_AVAILABLE:
+                    completion_tokens = completion.usage.completion_tokens
+                    prompt_tokens = completion.usage.prompt_tokens
+                    
+                    # Add the cost
+                    cost_tracker.add_openai_chat_cost(
+                        model=chat_model,  # Use the global chat model instead of hardcoding
+                        input_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                        operation_name=f"enhance_segment_{i}"
+                    )
+                
+                # Pause briefly to avoid rate limits
+                time.sleep(0.5)
+                
             except json.JSONDecodeError as e:
-                logger.error(f"Error parsing JSON response: {e}")
-                logger.error(f"Raw response: {response_text}")
+                logger.error(f"Failed to parse JSON from response for segment {i}: {e}")
+                logger.error(f"Response: {response_text}")
+                return None
                 
-                # Fall back to using the original segment with minimal enhancement
-                enhanced_segment = segment.copy()
-                enhanced_segment['description'] = "Content analysis unavailable"
-                enhanced_segment['visual_prompt'] = f"A visualization of podcast content discussing: {segment['text'][:100]}..."
-                enhanced_segment['key_points'] = []
-                enhanced_segment['image_path'] = None
-                enhanced_segment['processing_complete'] = False
-                
-                enhanced_segments.append(enhanced_segment)
         except Exception as e:
-            logger.error(f"Error enhancing segment {i+1}: {e}")
-            # Use the original segment with a note about the error
-            enhanced_segment = segment.copy()
-            enhanced_segment['description'] = f"Error during enhancement: {str(e)}"
-            enhanced_segment['visual_prompt'] = f"A podcast discussion visualization"
-            enhanced_segment['key_points'] = []
-            enhanced_segment['image_path'] = None
-            enhanced_segment['processing_complete'] = False
-            
-            enhanced_segments.append(enhanced_segment)
+            logger.error(f"Error enhancing segment {i}: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error("Segment enhancement failed")
+            return None
     
-    debug_point(f"Enhanced {len(enhanced_segments)} segments")
+    logger.info(f"Successfully enhanced {len(enhanced_segments)} segments")
     return enhanced_segments
 
 def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
@@ -2082,15 +2213,113 @@ def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
     logger.info("Generating visuals for segments")
     visuals = []
     
+    # Get custom visual generation prompt prefix from environment
+    custom_visual_prefix = os.environ.get("CUSTOM_VISUAL_PREFIX")
+    
+    # Get custom negative prompts from environment
+    custom_negative_prompts = os.environ.get("CUSTOM_NEGATIVE_PROMPTS")
+    if custom_negative_prompts:
+        logger.info(f"Found custom negative prompts from environment: {custom_negative_prompts[:100]}...")
+        logger.info(f"Custom negative prompts length: {len(custom_negative_prompts)} characters")
+        logger.info(f"Number of items in custom negative prompts: {len([x for x in custom_negative_prompts.split(',') if x.strip()])}")
+    else:
+        logger.warning("No custom negative prompts found in environment variables. Using only auto-generated negative prompts.")
+    
+    # Default visual generation prompt prefix if no custom prefix is provided
+    default_visual_prefix = "A high quality, detailed image with creative and artistic imagery that accurately reflects the specific time period described below, using abstract visual elements where appropriate and avoiding human figures or faces, ensuring the visual elements align naturally with the narrative context of the following scene: "
+    
     for i, segment in enumerate(enhanced_segments, 1):
         logger.info(f"Generating visuals for segment {i}/{len(enhanced_segments)}")
         try:
+            # Get the epoch time for negative prompts
+            epoch_time = segment.get('epoch_time', '')
+            
+            # Create negative prompts based on epoch time to avoid anachronisms
+            negative_prompts = []
+            
+            # Log the original visual prompt
+            logger.info(f"Original visual prompt: {segment['visual_prompt']}")
+            
+            # Combine the visual generation prefix with the segment's visual prompt
+            visual_prefix = custom_visual_prefix if custom_visual_prefix else default_visual_prefix
+            combined_prompt = f"{visual_prefix} {segment['visual_prompt']}"
+            
+            # Debug the combined prompt
+            logger.info(f"Combined prompt: {combined_prompt}")
+            
             # Generate image for the segment
             image_path = os.path.join(output_dir, f"segment_{i}.png")
+            
+            # Add anachronism avoidance negative prompts based on epoch time
+            if epoch_time:
+                # Determine what types of modern elements to avoid based on the epoch time
+                modern_items = ["modern skyscrapers", "cars", "smartphones", "computers", "contemporary clothing"]
+                
+                # Simple logic to check for pre-modern time periods
+                is_ancient = any(term in epoch_time.lower() for term in ["ancient", "medieval", "prehistoric", "bronze age", "iron age", "stone age", "bc", "bce", "century"])
+                is_pre_20th_century = any(term in epoch_time.lower() for term in ["1800s", "1700s", "1600s", "1500s", "1400s", "1300s", "1200s", "1100s", "1000s", "century", "renaissance", "victorian", "tudor", "colonial"])
+                
+                # Generate negative prompts based on the time period
+                if is_ancient:
+                    negative_prompts.extend(modern_items)
+                    negative_prompts.extend(["electricity", "modern buildings", "modern technology"])
+                    logger.info(f"Added ancient-specific negative prompts for epoch: {epoch_time}")
+                
+                elif is_pre_20th_century:
+                    negative_prompts.extend(["skyscrapers", "cars", "smartphones", "computers", "modern technology"])
+                    logger.info(f"Added pre-20th century negative prompts for epoch: {epoch_time}")
+            
+            # Start with custom negative prompts if available
+            negative_prompt_str = ""
+            if custom_negative_prompts:
+                # Use the custom negative prompts and add any anachronism-specific ones
+                negative_prompt_str = custom_negative_prompts
+                logger.info(f"Baseline negative prompts (from environment): {negative_prompt_str[:100]}...")
+                
+                # Add anachronism prompts if they exist
+                if negative_prompts:
+                    logger.info(f"Adding {len(negative_prompts)} anachronism-specific negative prompts: {', '.join(negative_prompts)}")
+                    negative_prompt_str += ", " + ", ".join(negative_prompts)
+                
+                logger.info(f"FINAL negative prompts (custom + anachronism): {negative_prompt_str[:150]}...")
+                logger.info(f"Total negative prompt length: {len(negative_prompt_str)} characters")
+                logger.info(f"Total negative prompt items: {len([x for x in negative_prompt_str.split(',') if x.strip()])}")
+            else:
+                # No custom prompts, make sure we have strong defaults to avoid inappropriate images
+                default_negative_prompts = ["humans", "people", "person", "man", "woman", "child", "face", "faces", "portrait", "photorealistic humans", "realistic human faces", "detailed faces", "nude", "naked", "nsfw", "disturbing content"]
+                negative_prompts.extend(default_negative_prompts)
+                negative_prompt_str = ", ".join(negative_prompts)
+                logger.info(f"Using default negative prompts since no custom prompts found: {negative_prompt_str}")
+                logger.info(f"Negative prompt items count: {len(negative_prompts)}")
+            
+            # Validate the prompt before sending to Stability
+            logger.info("Validating prompt before sending to Stability API")
+            is_safe, validated_prompt, validated_negative_prompt, reason = validate_image_prompt_with_deepseek(
+                combined_prompt, 
+                negative_prompt_str
+            )
+            
+            if not is_safe:
+                logger.warning(f"Prompt validation detected potential issues: {reason}")
+                logger.info("Using corrected prompts from validation")
+                
+                # Log the differences
+                if validated_prompt != combined_prompt:
+                    logger.info(f"Original prompt: {combined_prompt}")
+                    logger.info(f"Corrected prompt: {validated_prompt}")
+                
+                if negative_prompt_str and validated_negative_prompt != negative_prompt_str:
+                    logger.info(f"Original negative prompt: {negative_prompt_str}")
+                    logger.info(f"Corrected negative prompt: {validated_negative_prompt}")
+            else:
+                logger.info(f"Prompt validation passed: {reason}")
+            
+            # Generate the image with validated prompts
             success = generate_image_stability(
-                prompt=segment['visual_prompt'],
+                prompt=validated_prompt,
                 output_path=image_path,
-                non_interactive=non_interactive
+                non_interactive=non_interactive,
+                negative_prompt=validated_negative_prompt
             )
             
             if success:
@@ -2332,6 +2561,137 @@ def generate_llm_prompt(instructions, llm_client):
     except Exception as e:
         logger.error(f"Error generating prompt: {e}")
         return None
+
+def validate_image_prompt_with_deepseek(positive_prompt, negative_prompt=None):
+    """
+    Use Deepseek to validate that a prompt doesn't inadvertently request human imagery
+    and suggest corrections if it does.
+    
+    Args:
+        positive_prompt (str): The positive prompt to check
+        negative_prompt (str, optional): The negative prompt to check
+
+    Returns:
+        tuple: (is_safe, corrected_positive, corrected_negative, reason)
+    """
+    logger.info("Validating image prompt with Deepseek")
+    
+    # Check if we have either a DeepSeek or OpenAI API key
+    deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not deepseek_api_key and not openai_api_key:
+        logger.warning("No Deepseek or OpenAI API key found, skipping prompt validation")
+        return True, positive_prompt, negative_prompt, "No validation performed"
+    
+    try:
+        # Initialize LLM client - prefer Deepseek if available
+        if deepseek_api_key:
+            from openai import OpenAI
+            llm_client = OpenAI(
+                api_key=deepseek_api_key,
+                base_url="https://api.deepseek.com/v1"
+            )
+            model = "deepseek-chat"
+            logger.info("Using Deepseek for prompt validation")
+        else:
+            from openai import OpenAI
+            llm_client = OpenAI(api_key=openai_api_key)
+            model = "gpt-4"
+            logger.info("Using OpenAI for prompt validation (Deepseek not available)")
+        
+        # Prepare the system prompt for validation
+        system_prompt = """You are an expert at analyzing image generation prompts for problematic content.
+Your task is to check if the provided prompts might inadvertently lead to generating disturbing human imagery.
+
+Check for:
+1. Any phrases requesting realistic humans, faces, or human-like figures
+2. Instructions that might result in inappropriate, disturbing or explicit human imagery
+3. Contradictions between positive and negative prompts
+
+If you find issues, suggest corrected versions that:
+- Remove any requests for human or face depictions
+- Keep the core subject matter intact
+- Prioritize abstract, conceptual, or scenic imagery instead
+- Ensures positive prompts don't contradict negative prompts
+
+Reply in JSON format with the following fields:
+{
+  "is_safe": boolean,
+  "corrected_positive_prompt": "string",
+  "corrected_negative_prompt": "string",
+  "reason": "string explanation"
+}"""
+
+        # Create the user message content
+        user_content = f"POSITIVE PROMPT: {positive_prompt}\n\n"
+        if negative_prompt:
+            user_content += f"NEGATIVE PROMPT: {negative_prompt}\n\n"
+        user_content += "Please analyze these prompts and suggest corrections if needed."
+        
+        # Query the LLM
+        response = llm_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.1,  # Low temperature for consistent results
+            max_tokens=1000,
+            response_format={"type": "json_object"}
+        )
+        
+        # Track API cost if cost tracker is available
+        if COST_TRACKER_AVAILABLE:
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            if deepseek_api_key:
+                # If Deepseek cost tracking is implemented, use that method
+                cost_tracker.add_openai_chat_cost(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="prompt_validation"
+                )
+            else:
+                cost_tracker.add_openai_chat_cost(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="prompt_validation"
+                )
+        
+        # Parse the response
+        result_text = response.choices[0].message.content.strip()
+        try:
+            result = json.loads(result_text)
+            
+            # Log the validation results
+            if result["is_safe"]:
+                logger.info("Prompt validation passed: No problematic human imagery detected")
+            else:
+                logger.warning(f"Prompt validation failed: {result['reason']}")
+                logger.info(f"Original positive prompt: {positive_prompt}")
+                logger.info(f"Corrected positive prompt: {result['corrected_positive_prompt']}")
+                if negative_prompt:
+                    logger.info(f"Original negative prompt: {negative_prompt}")
+                    logger.info(f"Corrected negative prompt: {result['corrected_negative_prompt']}")
+            
+            return (
+                result["is_safe"],
+                result["corrected_positive_prompt"],
+                result["corrected_negative_prompt"] if negative_prompt else negative_prompt,
+                result["reason"]
+            )
+            
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse LLM response as JSON: {result_text}")
+            return True, positive_prompt, negative_prompt, "Error parsing validation response"
+        
+    except Exception as e:
+        logger.error(f"Error validating prompt: {str(e)}")
+        logger.error(traceback.format_exc())
+        return True, positive_prompt, negative_prompt, f"Validation error: {str(e)}"
 
 if __name__ == "__main__":
     try:
