@@ -191,5 +191,7 @@ podcast2video/webapp/uploads/
 podcast2video/webapp/transcripts/
 podcast2video/webapp/outputs/
 .openai*.env
-podcast2video/podcast2video/.customprompts.md
+podcast2video/.customprompt.*
 podcast2video/podcast2video/.customprompt_genimage.md
+podcast2video/.customprompt*.txt
+podcast2video/.customprompt*.txt

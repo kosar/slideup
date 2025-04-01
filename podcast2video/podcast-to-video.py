@@ -27,14 +27,23 @@ import inspect
 
 # Import cost tracker
 try:
-    from podcast2video.cost_tracker import get_cost_tracker
-    COST_TRACKER_AVAILABLE = True
+    try:
+        from podcast2video.cost_tracker import get_cost_tracker
+        COST_TRACKER_AVAILABLE = True
+    except ImportError:
+        # Fallback to local import if module import fails
+        from cost_tracker import get_cost_tracker
+        COST_TRACKER_AVAILABLE = True
+    
     cost_tracker = get_cost_tracker()
     # Reset cost tracker at startup
     cost_tracker.reset()
-except ImportError:
+except ImportError as e:
     COST_TRACKER_AVAILABLE = False
-    print("Cost tracker module not available. API costs will not be tracked.")
+    print(f"Cost tracker module not available. API costs will not be tracked. Error: {e}")
+except Exception as e:
+    COST_TRACKER_AVAILABLE = False
+    print(f"Error initializing cost tracker: {e}. API costs will not be tracked.")
 
 # Set up logging first
 logging.basicConfig(
@@ -1741,7 +1750,7 @@ def convert_srt_to_vtt(srt_content):
     return vtt_content
 
 def transcribe_audio(audio_path, force_transcription=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp", limit_to_one_minute=False):
-    """Transcribe audio using local SpeechRecognition with pocketsphinx"""
+    """Transcribe audio using local SpeechRecognition with pocketsphinx with improved accuracy"""
     debug_point("Starting audio transcription with local SpeechRecognition")
     
     # Make sure directories exist
@@ -1755,9 +1764,31 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
     srt_path = os.path.join(transcript_dir, f"{audio_hash}.srt")
     vtt_path = os.path.join(transcript_dir, f"{audio_hash}.vtt")
     
-    # If we already have a transcription and force_transcription is False, use it
+    # Check if we already have a valid transcription and force_transcription is False
+    existing_transcript_valid = False
     if os.path.exists(srt_path) and not force_transcription:
-        debug_point(f"Using existing transcription: {srt_path}")
+        # Check if the file is not empty and contains valid content
+        try:
+            with open(srt_path, 'r') as f:
+                content = f.read().strip()
+            if content and len(content.split('\n\n')) > 0:
+                debug_point(f"Using existing transcription: {srt_path}")
+                existing_transcript_valid = True
+            else:
+                logger.warning(f"Existing transcript file is empty or invalid, regenerating: {srt_path}")
+                # Remove the invalid file
+                os.remove(srt_path)
+                if os.path.exists(vtt_path):
+                    os.remove(vtt_path)
+        except Exception as e:
+            logger.warning(f"Error checking existing transcript, will regenerate: {e}")
+            # Remove the potentially corrupted file
+            if os.path.exists(srt_path):
+                os.remove(srt_path)
+            if os.path.exists(vtt_path):
+                os.remove(vtt_path)
+    
+    if existing_transcript_valid:
         return srt_path
     
     # Check if SpeechRecognition and pocketsphinx are available
@@ -1768,24 +1799,56 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
     # Preprocess audio if needed
     temp_audio_path = os.path.join(temp_dir, f"temp_{audio_hash}.wav")
     
-    if limit_to_one_minute:
-        debug_point(f"Limiting audio to {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) for testing")
-        # Convert to WAV and limit using ffmpeg
-        command = [
-            "ffmpeg", "-y", "-i", audio_path, 
-            "-t", str(TIME_LIMIT_SECONDS), "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-            temp_audio_path
-        ]
-        logger.info(f"Using time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
-    else:
-        # Convert to WAV format suitable for SpeechRecognition
-        command = [
-            "ffmpeg", "-y", "-i", audio_path, 
-            "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-            temp_audio_path
-        ]
-    
     try:
+        # Check if ffmpeg supports advanced filters before using them
+        check_filters = subprocess.run(
+            ["ffmpeg", "-filters"], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
+        filters_output = check_filters.stdout.decode('utf-8', errors='ignore')
+        can_use_advanced_filters = "afftdn" in filters_output and "loudnorm" in filters_output
+        
+        if limit_to_one_minute:
+            debug_point(f"Limiting audio to {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) for testing")
+            
+            if can_use_advanced_filters:
+                # Convert to WAV with enhanced preprocessing
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-t", str(TIME_LIMIT_SECONDS),
+                    # Apply audio filters for better recognition
+                    "-af", "highpass=f=200,lowpass=f=8000,afftdn=nf=-20,loudnorm=I=-16:LRA=11:TP=-1.5",
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+            else:
+                # Fall back to basic conversion
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-t", str(TIME_LIMIT_SECONDS),
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+            logger.info(f"Using time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
+        else:
+            if can_use_advanced_filters:
+                # Convert with enhanced preprocessing
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path,
+                    # Apply audio filters for better recognition
+                    "-af", "highpass=f=200,lowpass=f=8000,afftdn=nf=-20,loudnorm=I=-16:LRA=11:TP=-1.5",
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+            else:
+                # Fall back to basic conversion
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+        
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         debug_point(f"Preprocessed audio saved to {temp_audio_path}")
         
@@ -1802,19 +1865,28 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Initialize SpeechRecognition recognizer
         recognizer = sr.Recognizer()
         
+        # Add diagnostic settings for recognizer
+        # Experiment with energy thresholds for better noise handling
+        recognizer.energy_threshold = 300  # Increased from default for better noise resistance
+        recognizer.dynamic_energy_threshold = True
+        recognizer.dynamic_energy_adjustment_ratio = 1.5  # More aggressive adjustment to noise
+        
         # Adjust for ambient noise if the audio duration is sufficient
         logger.info(f"Audio duration: {audio_duration} seconds")
         
         # Create segments from the audio file
         # We'll split audio into segments for better recognition
         logger.info("Splitting audio into segments for transcription")
-        segment_length = 30  # seconds per segment, pocketsphinx works better with shorter segments
+        segment_length = 20  # shorter segments for better recognition accuracy
         
         segments = []
+        segment_confidence_scores = []
+        segment_recognition_times = []
         
         # Function to transcribe a segment of audio
         def transcribe_segment(start_time, end_time, segment_idx):
             debug_point(f"Transcribing segment {segment_idx+1}: {start_time:.2f}s - {end_time:.2f}s")
+            segment_start_time = time.time()
             
             # Create a temporary file for this segment
             segment_path = os.path.join(temp_dir, f"segment_{audio_hash}_{segment_idx}.wav")
@@ -1832,17 +1904,18 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
                 
                 # Use SpeechRecognition with pocketsphinx
                 with sr.AudioFile(segment_path) as source:
-                    # Adjust for ambient noise with a short duration
-                    recognizer.adjust_for_ambient_noise(source, duration=min(1.0, end_time-start_time))
+                    # Adjust for ambient noise with a short duration - using 0.3 seconds is more effective
+                    recognizer.adjust_for_ambient_noise(source, duration=min(0.3, max(0.1, end_time-start_time)))
                     audio_data = recognizer.record(source)
                     
                     try:
                         # Use pocketsphinx for offline recognition
+                        # Use only parameters supported by the library
                         text = recognizer.recognize_sphinx(audio_data)
                         logger.info(f"Segment {segment_idx+1} recognized: {text[:30]}...")
                         
                         # Create segment with timestamps
-                        return {
+                        segment_result = {
                             "index": segment_idx + 1,
                             "start": start_time,
                             "end": end_time,
@@ -1852,6 +1925,14 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
                                 "end": format_timestamp(end_time)
                             }
                         }
+                        
+                        # Record processing time for diagnostics
+                        recognition_time = time.time() - segment_start_time
+                        segment_recognition_times.append((segment_idx, recognition_time))
+                        logger.info(f"Segment {segment_idx+1} processing time: {recognition_time:.2f}s")
+                        
+                        return segment_result
+                        
                     except sr.UnknownValueError:
                         logger.warning(f"Sphinx could not understand audio in segment {segment_idx+1}")
                         return {
@@ -1875,18 +1956,19 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
                 logger.error(f"Error processing segment {segment_idx+1}: {e}")
                 return None
         
-        # Determine how many segments to create
+        # Determine how many segments to create with overlap for better transitions
         num_segments = max(1, int(audio_duration / segment_length))
         logger.info(f"Splitting audio into {num_segments} segments of {segment_length}s each")
         
-        # Create a list of start/end times for each segment
+        # Create a list of start/end times for each segment with slight overlap
         segment_times = []
+        overlap = 0.5  # 0.5 second overlap between segments
         for i in range(num_segments):
-            start = i * segment_length
-            end = min((i + 1) * segment_length, audio_duration)
+            start = max(0, i * segment_length - overlap if i > 0 else 0)
+            end = min((i + 1) * segment_length + (overlap if i < num_segments - 1 else 0), audio_duration)
             segment_times.append((start, end, i))
         
-        # Process segments in parallel using ThreadPoolExecutor
+        # Process segments in parallel using ThreadPoolExecutor with adaptive pool size
         with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as executor:
             futures = []
             for start, end, idx in segment_times:
@@ -1902,6 +1984,56 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         # Sort segments by start time
         segments.sort(key=lambda x: x["start"])
         
+        # Function to merge consecutive segments that belong together contextually
+        def merge_contextual_segments(segments):
+            if not segments:
+                return []
+                
+            merged_segments = []
+            current_segment = segments[0]
+            
+            for next_segment in segments[1:]:
+                # Check if segments should be merged (close together or contextual continuation)
+                if ((next_segment["start"] - current_segment["end"] < 0.3) or 
+                    (next_segment["text"].strip() and next_segment["text"][0].islower() and 
+                     not next_segment["text"].startswith("[inaudible]"))):
+                    
+                    # Merge segments
+                    merged_text = current_segment["text"]
+                    if merged_text.endswith(".") or merged_text.endswith("?") or merged_text.endswith("!"):
+                        merged_text += " " + next_segment["text"]
+                    else:
+                        merged_text += " " + next_segment["text"]
+                    
+                    current_segment["end"] = next_segment["end"]
+                    current_segment["text"] = merged_text
+                    current_segment["timestamp"]["end"] = next_segment["timestamp"]["end"]
+                else:
+                    merged_segments.append(current_segment)
+                    current_segment = next_segment
+            
+            # Add the last merged segment
+            merged_segments.append(current_segment)
+            return merged_segments
+        
+        # Try to merge segments for better context if we have multiple segments
+        if len(segments) > 1:
+            original_segment_count = len(segments)
+            # Commenting out segment merging to keep all original segments
+            # segments = merge_contextual_segments(segments)
+            # logger.info(f"Merged {original_segment_count} segments into {len(segments)} for better context")
+            logger.info(f"Preserving all {original_segment_count} original segments (merging disabled)")
+        
+        # Print diagnostics information
+        if segment_recognition_times:
+            avg_time = sum(time for _, time in segment_recognition_times) / len(segment_recognition_times)
+            logger.info(f"Average segment processing time: {avg_time:.2f}s")
+        
+        # Check if we have any segments before saving
+        if not segments:
+            logger.error("No segments were extracted from the audio. Transcription failed.")
+            return None
+            
         # Convert segments to SRT format
         debug_point("Converting transcription to SRT format")
         srt_content = ""
@@ -1923,6 +2055,11 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
         with open(srt_path, "w") as f:
             f.write(srt_content)
         
+        # Verify the file was written properly
+        if os.path.getsize(srt_path) == 0:
+            logger.error("Failed to write transcript to SRT file (file is empty)")
+            return None
+            
         # Convert to VTT format
         vtt_content = convert_srt_to_vtt(srt_content)
         with open(vtt_path, "w") as f:
@@ -1952,35 +2089,75 @@ def format_timestamp(seconds):
 def extract_segments(transcript_path):
     """Extract segments from SRT transcript file"""
     try:
+        # Validate transcript file exists
+        if not os.path.exists(transcript_path):
+            logger.error(f"Transcript file does not exist: {transcript_path}")
+            return []
+            
+        # Check if file is empty
+        if os.path.getsize(transcript_path) == 0:
+            logger.error(f"Transcript file is empty: {transcript_path}")
+            return []
+        
         segments = []
         current_segment = None
         
+        # Load entire file first to validate basic format
+        with open(transcript_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        # Quick validation of file format
+        if '-->' not in content:
+            logger.error(f"Transcript file doesn't contain any timestamp markers (-->): {transcript_path}")
+            return []
+            
+        # Minimum segment count check
+        segment_count = content.count('\n\n')
+        if segment_count == 0:
+            logger.error(f"Transcript file doesn't contain any valid segments: {transcript_path}")
+            return []
+            
+        logger.info(f"Found approximately {segment_count} potential segments in transcript")
+        
+        # Now parse the file line by line
+        line_number = 0
         with open(transcript_path, 'r', encoding='utf-8') as f:
             for line in f:
+                line_number += 1
                 line = line.strip()
                 
                 # Skip empty lines
                 if not line:
                     if current_segment and 'text' in current_segment and 'timestamp' in current_segment:
-                        # Convert timestamp strings to seconds before adding the segment
-                        start_str = current_segment['timestamp']['start']
-                        end_str = current_segment['timestamp']['end']
-                        
-                        # Parse timestamps to seconds
-                        start_seconds = parse_timestamp(start_str)
-                        end_seconds = parse_timestamp(end_str)
-                        
-                        # Add start and end times in seconds for processing
-                        current_segment['start'] = start_seconds
-                        current_segment['end'] = end_seconds
-                        current_segment['start_time'] = start_seconds  # Add both naming conventions
-                        current_segment['end_time'] = end_seconds      # Add both naming conventions
-                        
-                        segments.append(current_segment)
+                        try:
+                            # Convert timestamp strings to seconds before adding the segment
+                            start_str = current_segment['timestamp']['start']
+                            end_str = current_segment['timestamp']['end']
+                            
+                            # Parse timestamps to seconds
+                            start_seconds = parse_timestamp(start_str)
+                            end_seconds = parse_timestamp(end_str)
+                            
+                            # Validate timestamps
+                            if start_seconds > end_seconds:
+                                logger.warning(f"Invalid segment at line {line_number}: start time {start_seconds} > end time {end_seconds}. Skipping.")
+                                current_segment = None
+                                continue
+                                
+                            # Add start and end times in seconds for processing
+                            current_segment['start'] = start_seconds
+                            current_segment['end'] = end_seconds
+                            current_segment['start_time'] = start_seconds  # Add both naming conventions
+                            current_segment['end_time'] = end_seconds      # Add both naming conventions
+                            
+                            segments.append(current_segment)
+                        except Exception as e:
+                            logger.warning(f"Error processing segment at line {line_number}: {e}")
+                            
                         current_segment = None
                     elif current_segment:
                         # Skip incomplete segments
-                        logger.warning(f"Skipping incomplete segment: {current_segment}")
+                        logger.warning(f"Skipping incomplete segment at line {line_number}: {current_segment}")
                         current_segment = None
                     continue
                 
@@ -1990,20 +2167,24 @@ def extract_segments(transcript_path):
                         int(line)  # Verify it's a number
                         current_segment = {'index': int(line)}
                     except ValueError:
-                        logger.warning(f"Expected segment number, got: {line}")
+                        logger.warning(f"Expected segment number at line {line_number}, got: {line}")
                         continue
                 
                 # If we have a current segment but no timestamp, this line should be the timestamp
                 elif 'timestamp' not in current_segment:
-                    try:
-                        start, end = line.split(' --> ')
-                        current_segment['timestamp'] = {
-                            'start': start,
-                            'end': end
-                        }
-                    except ValueError:
-                        logger.warning(f"Invalid timestamp format: {line}")
-                        continue
+                    if ' --> ' in line:
+                        try:
+                            start, end = line.split(' --> ')
+                            current_segment['timestamp'] = {
+                                'start': start,
+                                'end': end
+                            }
+                        except ValueError:
+                            logger.warning(f"Invalid timestamp format at line {line_number}: {line}")
+                            current_segment = None
+                    else:
+                        logger.warning(f"Expected timestamp at line {line_number}, got: {line}")
+                        current_segment = None
                 
                 # If we have a current segment and timestamp, this line should be the text
                 else:
@@ -2015,24 +2196,36 @@ def extract_segments(transcript_path):
         
         # Add the last segment if it exists
         if current_segment and 'text' in current_segment and 'timestamp' in current_segment:
-            # Convert timestamp strings to seconds
-            start_str = current_segment['timestamp']['start']
-            end_str = current_segment['timestamp']['end']
-            
-            # Parse timestamps to seconds
-            start_seconds = parse_timestamp(start_str)
-            end_seconds = parse_timestamp(end_str)
-            
-            # Add start and end times in seconds for processing
-            current_segment['start'] = start_seconds
-            current_segment['end'] = end_seconds
-            current_segment['start_time'] = start_seconds  # Add both naming conventions
-            current_segment['end_time'] = end_seconds      # Add both naming conventions
-            
-            segments.append(current_segment)
+            try:
+                # Convert timestamp strings to seconds
+                start_str = current_segment['timestamp']['start']
+                end_str = current_segment['timestamp']['end']
+                
+                # Parse timestamps to seconds
+                start_seconds = parse_timestamp(start_str)
+                end_seconds = parse_timestamp(end_str)
+                
+                # Validate timestamps
+                if start_seconds > end_seconds:
+                    logger.warning(f"Invalid last segment: start time {start_seconds} > end time {end_seconds}. Skipping.")
+                else:
+                    # Add start and end times in seconds for processing
+                    current_segment['start'] = start_seconds
+                    current_segment['end'] = end_seconds
+                    current_segment['start_time'] = start_seconds  # Add both naming conventions
+                    current_segment['end_time'] = end_seconds      # Add both naming conventions
+                    
+                    segments.append(current_segment)
+            except Exception as e:
+                logger.warning(f"Error processing last segment: {e}")
         
+        # Final validation check
+        if not segments:
+            logger.error(f"No valid segments were extracted from transcript file: {transcript_path}")
+            return []
+            
         # Log extracted segments (summary only, not each one)
-        logger.info(f"Extracted {len(segments)} segments from transcript")
+        logger.info(f"Successfully extracted {len(segments)} valid segments from transcript")
         
         # Check segments and calculate stats
         total_duration = 0
