@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Test Results - Podcast2Video</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <style>
+        .status-badge {
+            font-size: 1rem;
+            padding: 0.5rem 1rem;
+        }
+        .test-card {
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row">
+            <div class="col-md-8 offset-md-2">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h2 class="text-center">API Test Results</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="text-center mb-4">
+                            <h3>
+                                Overall Status: 
+                                <span class="badge rounded-pill bg-{{ 'success' if test_results.overall_status == 'success' else 'danger' }}">
+                                    {{ test_results.overall_status | upper }}
+                                </span>
+                            </h3>
+                            <p class="text-muted">Timestamp: {{ test_results.timestamp }}</p>
+                        </div>
+                        
+                        <h4>Individual API Tests:</h4>
+                        
+                        {% for test in test_results.tests %}
+                        <div class="card test-card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0">{{ test.api }}</h5>
+                                <span class="badge rounded-pill bg-{{ 'success' if test.status == 'success' else 'danger' }} status-badge">
+                                    {{ test.status | upper }}
+                                </span>
+                            </div>
+                            <div class="card-body">
+                                <p>{{ test.message }}</p>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        
+                        <div class="d-grid gap-2 mt-4">
+                            <a href="{{ url_for('test_apis_endpoint') }}" class="btn btn-primary">Run Tests Again</a>
+                            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Back to Home</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 

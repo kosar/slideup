@@ -21,7 +21,8 @@ else
 fi
 
 # Verify required API keys are set
-required_keys=("OPENAI_API_KEY" "STABILITY_API_KEY")
+# Removed OPENAI_API_KEY from required keys as we now use local transcription
+required_keys=("STABILITY_API_KEY")
 missing_keys=()
 
 for key in "${required_keys[@]}"; do

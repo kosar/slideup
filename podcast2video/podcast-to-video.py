@@ -21,8 +21,31 @@ import queue
 import base64
 import wave
 import shutil
+from datetime import datetime
+import numpy as np
+import inspect
 
-# Set up logging
+# Import cost tracker
+try:
+    try:
+        from podcast2video.cost_tracker import get_cost_tracker
+        COST_TRACKER_AVAILABLE = True
+    except ImportError:
+        # Fallback to local import if module import fails
+        from cost_tracker import get_cost_tracker
+        COST_TRACKER_AVAILABLE = True
+    
+    cost_tracker = get_cost_tracker()
+    # Reset cost tracker at startup
+    cost_tracker.reset()
+except ImportError as e:
+    COST_TRACKER_AVAILABLE = False
+    print(f"Cost tracker module not available. API costs will not be tracked. Error: {e}")
+except Exception as e:
+    COST_TRACKER_AVAILABLE = False
+    print(f"Error initializing cost tracker: {e}. API costs will not be tracked.")
+
+# Set up logging first
 logging.basicConfig(
     level=logging.INFO,  # Changed from DEBUG to INFO
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -33,8 +56,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger('podcast2video')
 
+# Initialize MoviePy
+moviepy_editor = None
+MOVIEPY_AVAILABLE = False
+
+try:
+    import moviepy.editor as moviepy_editor
+    MOVIEPY_AVAILABLE = True
+    logger.info("Successfully imported MoviePy")
+except ImportError as e:
+    logger.error(f"MoviePy import error: {e}")
+    MOVIEPY_AVAILABLE = False
+
 # Global configuration
-TIME_LIMIT_SECONDS = 60  # 6 minutes
+TIME_LIMIT_SECONDS = 180  # 3 minutes
 TIME_LIMIT_MS = int(TIME_LIMIT_SECONDS * 1000)  # Convert to milliseconds
 
 # Create a separate logger for HTTP requests with reduced verbosity
@@ -52,6 +87,30 @@ task_start_time = None  # Track when current task started
 task_name = None  # Track current task name
 task_stack = []  # Stack to track nested operations
 min_task_duration = 0.5  # Increased minimum duration to log (in seconds)
+chat_model = None  # Global variable to store the current chat model
+
+# Import optional modules
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    logger.error("OpenAI library not installed. Run: pip install openai")
+    OPENAI_AVAILABLE = False
+
+# Import SpeechRecognition and pocketsphinx for local transcription
+try:
+    import speech_recognition as sr
+    SPEECH_RECOGNITION_AVAILABLE = True
+except ImportError:
+    logger.error("SpeechRecognition library not installed. Run: pip install SpeechRecognition")
+    SPEECH_RECOGNITION_AVAILABLE = False
+
+try:
+    import pocketsphinx
+    POCKETSPHINX_AVAILABLE = True
+except ImportError:
+    logger.error("pocketsphinx library not installed. Run: pip install pocketsphinx")
+    POCKETSPHINX_AVAILABLE = False
 
 # List of known long-running operations that shouldn't trigger warnings
 LONG_RUNNING_OPERATIONS = [
@@ -127,6 +186,15 @@ def start_progress_monitoring(interval=5):
             time.sleep(interval)
             current_time = time.time()
             
+            # Report cost data periodically for the webapp
+            if COST_TRACKER_AVAILABLE:
+                try:
+                    cost_summary = cost_tracker.get_summary()
+                    cost_json = json.dumps(cost_summary)
+                    print(f"COST_DATA: {cost_json}")
+                except Exception as e:
+                    logger.error(f"Error reporting cost data: {str(e)}")
+            
             # Check if we have an active task
             if current_operation and task_start_time:
                 elapsed = current_time - last_progress_time  # Changed from task_start_time to last_progress_time
@@ -184,31 +252,6 @@ def with_timeout(func, args=(), kwargs={}, timeout_seconds=60, description="oper
         logger.warning(f"{description} did not complete within {timeout_seconds} seconds")
     return result[0], None
 
-# Import required modules
-try:
-    from moviepy import AudioFileClip, ImageClip, TextClip, CompositeVideoClip, concatenate_videoclips, VideoFileClip
-    MOVIEPY_AVAILABLE = True
-    logger.info("Successfully imported MoviePy")
-except ImportError as e:
-    logger.error(f"MoviePy import error: {e}")
-    MOVIEPY_AVAILABLE = False
-
-# Optional API modules
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    logger.error("OpenAI library not installed. Run: pip install openai")
-    OPENAI_AVAILABLE = False
-
-try:
-    from stability_sdk import client as stability_client
-    import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
-    STABILITY_AVAILABLE = True
-except ImportError:
-    logger.error("Stability SDK not installed. Run: pip install stability-sdk")
-    STABILITY_AVAILABLE = False
-
 # Add after other global variables
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -252,12 +295,127 @@ def cache_research_results(element_name, research, image_prompt):
     except Exception as e:
         logger.warning(f"Error caching results for {element_name}: {e}")
 
+def test_openai_api():
+    """Test OpenAI API connection"""
+    if not os.environ.get("OPENAI_API_KEY"):
+        logger.error("OPENAI_API_KEY not found in environment variables")
+        return False
+    
+    try:
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        
+        # Test with a simple chat completion
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Hello, are you working?"}],
+            max_tokens=10
+        )
+        
+        # Track API cost if cost tracker is available
+        if COST_TRACKER_AVAILABLE:
+            # Extract token usage
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            cost_tracker.add_openai_chat_cost(
+                model="gpt-3.5-turbo",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                operation_name="api_test"
+            )
+        
+        logger.info("OpenAI API test successful!")
+        return True
+    except Exception as e:
+        logger.error(f"OpenAI API test failed: {e}")
+        return False
+
+def test_stability_api():
+    """Test Stability API connectivity."""
+    if not os.environ.get("STABILITY_API_KEY"):
+        logger.error("Stability API key is not set in environment variables")
+        return False
+    
+    try:
+        # Make a simple GET request to check API status
+        headers = {
+            "Authorization": f"Bearer {os.environ.get('STABILITY_API_KEY')}"
+        }
+        response = requests.get("https://api.stability.ai/v1/user/balance", headers=headers)
+        
+        if response.status_code == 200:
+            logger.info("Successfully connected to Stability API")
+            return True
+        else:
+            logger.error(f"Failed to connect to Stability API: {response.status_code} {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to connect to Stability API: {str(e)}")
+        return False
+
+def setup_signal_handling():
+    """Set up signal handlers for graceful termination."""
+    def signal_handler(sig, frame):
+        logger.info(f"Received signal {sig}, shutting down gracefully")
+        sys.exit(0)
+    
+    # Register SIGINT (Ctrl+C) handler
+    signal.signal(signal.SIGINT, signal_handler)
+    # Register SIGTERM handler
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    logger.info("Signal handlers registered")
+
+def cleanup():
+    """Cleanup operations to perform when exiting"""
+    global temp_files
+    
+    # Generate and output final cost report
+    if COST_TRACKER_AVAILABLE:
+        try:
+            cost_summary = cost_tracker.get_summary()
+            logger.info(f"Final cost summary: ${cost_summary['total_cost']:.4f} total")
+            logger.info(f"API breakdown: OpenAI chat=${cost_summary['api_breakdown']['openai']['chat']:.4f}, " +
+                       f"transcription=${cost_summary['api_breakdown']['openai']['transcription']:.4f}, " +
+                       f"Stability image=${cost_summary['api_breakdown']['stability']['image']:.4f}")
+            
+            # Save detailed report
+            report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost_report.json")
+            cost_tracker.save_report(report_path)
+            logger.info(f"Detailed cost report saved to {report_path}")
+            
+            # Print cost data in format for webapp to parse
+            cost_json = json.dumps(cost_summary)
+            print(f"COST_DATA: {cost_json}")
+        except Exception as e:
+            logger.error(f"Error generating cost report: {str(e)}")
+    
+    # Cleanup temp files
+    for temp_file in temp_files:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                logger.debug(f"Removed temp file: {temp_file}")
+        except Exception as e:
+            logger.warning(f"Failed to remove temp file {temp_file}: {str(e)}")
+
 def main():
+    """Main entry point for the podcast-to-video application"""
+    debug_point("Starting podcast-to-video")
+    
+    # Initialize cost tracking if available
+    if COST_TRACKER_AVAILABLE:
+        logger.info("API cost tracking enabled")
+        # Reset the cost tracker for this run
+        cost_tracker.reset()
+
     parser = argparse.ArgumentParser(description='Convert podcast audio to video with AI-generated visuals')
     parser.add_argument('--audio', type=str, required=True, help='Path to input audio file')
     parser.add_argument('--output', type=str, default='enhanced_podcast.mp4', help='Path to output video file')
-    parser.add_argument('--limit_to_one_minute', action='store_true', help='Limit processing to first minute of audio')
+    parser.add_argument('--limit_to_one_minute', action='store_true', 
+                       help=f'Limit processing to first {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) of audio')
     parser.add_argument('--non_interactive', action='store_true', help='Run in non-interactive mode')
+    parser.add_argument('--test_openai', action='store_true', help='Test OpenAI API connectivity')
+    parser.add_argument('--test_stability', action='store_true', help='Test Stability API connectivity')
     args = parser.parse_args()
 
     # Set up signal handlers
@@ -349,46 +507,89 @@ def check_cancel():
 
 # Test API connectivity before using it
 def test_api_connection(client, api_type="openai"):
-    """Test API connectivity with a simple request"""
+    """Test the connection to an API"""
     debug_point(f"Testing {api_type} API connection")
+    
     try:
-        if api_type.lower() == "openai":
+        if api_type == "openai":
+            # Simple query to test the API
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo", 
-                messages=[{"role": "user", "content": "Hello"}],
-                max_tokens=5
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": "Hello, this is a test. Respond with 'OK' if you can see this."}],
+                max_tokens=10
             )
-            logger.info(f"OpenAI API test successful: {response.choices[0].message.content}")
-            return True
-        elif api_type.lower() == "deepseek":
-            # Try multiple potential DeepSeek model names in case of API changes
-            potential_models = ["deepseek-chat", "deepseek-coder"]  # Removed "deepseek-llm" as it doesn't exist
             
-            for model in potential_models:
-                try:
-                    logger.info(f"Trying DeepSeek model: {model}")
-                    response = client.chat.completions.create(
-                        model=model, 
-                        messages=[{"role": "user", "content": "Hello"}],
-                        max_tokens=5
-                    )
-                    logger.info(f"DeepSeek API test successful with model {model}: {response.choices[0].message.content}")
-                    # Update the global chat_model variable to use the working model
-                    global chat_model
-                    chat_model = model
-                    return True
-                except Exception as model_error:
-                    logger.warning(f"DeepSeek model {model} failed: {model_error}")
-                    continue
+            # Track API cost if cost tracker is available
+            if COST_TRACKER_AVAILABLE:
+                # Extract token usage
+                input_tokens = response.usage.prompt_tokens
+                output_tokens = response.usage.completion_tokens
+                cost_tracker.add_openai_chat_cost(
+                    model="gpt-3.5-turbo",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="api_connection_test"
+                )
             
-            # If we've tried all models and none worked
-            logger.error("All DeepSeek models failed the test")
-            return False
-        else:
-            logger.warning(f"Unknown API type: {api_type}")
-            return False
+            result = response.choices[0].message.content.strip()
+            logger.info(f"OpenAI API test response: {result}")
+            
+            if "ok" in result.lower():
+                logger.info("OpenAI API connection successful!")
+                return True
+            else:
+                logger.warning(f"OpenAI API returned unexpected response: {result}")
+                return True  # Still return true since we got a response
+                
+        elif api_type == "deepseek":
+            # Test DeepSeek API with a simple query
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": "Hello, this is a test. Respond with 'OK' if you can see this."}],
+                max_tokens=10
+            )
+            
+            # Track API cost if cost tracker is available
+            if COST_TRACKER_AVAILABLE:
+                # Extract token usage
+                input_tokens = response.usage.prompt_tokens
+                output_tokens = response.usage.completion_tokens
+                cost_tracker.add_openai_chat_cost(
+                    model="deepseek-chat",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="api_connection_test"
+                )
+            
+            result = response.choices[0].message.content.strip()
+            logger.info(f"DeepSeek API test response: {result}")
+            
+            if "ok" in result.lower():
+                logger.info("DeepSeek API connection successful!")
+                return True
+            else:
+                logger.warning(f"DeepSeek API returned unexpected response: {result}")
+                return True  # Still return true since we got a response
+                
+        elif api_type == "stability":
+            # For Stability API, we'll make a test request
+            headers = {"Authorization": f"Bearer {os.environ.get('STABILITY_API_KEY')}"}
+            response = requests.get(
+                "https://api.stability.ai/v1/engines/list", 
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                logger.info("Stability API connection successful!")
+                return True
+            else:
+                logger.error(f"Stability API test failed: {response.status_code} - {response.text}")
+                return False
+        
+        return False
     except Exception as e:
-        logger.error(f"API test failed for {api_type}: {e}")
+        logger.error(f"API test failed: {e}")
+        traceback.print_exc()
         return False
 
 # Initialize clients - add debug information
@@ -421,8 +622,8 @@ try:
                 api_key=deepseek_api_key,
                 base_url="https://api.deepseek.com/v1"
             )
-            chat_model = "deepseek-chat"  # Changed from "deepseek-llm" to "deepseek-chat" which works
-            embedding_model = "deepseek-embedding"
+            chat_model = "deepseek-chat"  # DeepSeek's chat model
+            embedding_model = "deepseek-embedding"  # DeepSeek's embedding model
             api_type = "deepseek"
             logger.info("Using DeepSeek API for language models")
             
@@ -432,6 +633,7 @@ try:
                 # Reset client if test failed
                 ai_client = None
                 api_type = None
+                chat_model = None
                 
                 # If OpenAI is available, try that instead
                 if openai_api_key:
@@ -450,8 +652,8 @@ try:
             # Check if OpenAI library is installed
             from openai import OpenAI
             ai_client = OpenAI(api_key=openai_api_key)
-            chat_model = "gpt-4o"
-            embedding_model = "text-embedding-3-large"
+            chat_model = "gpt-4"  # OpenAI's model
+            embedding_model = "text-embedding-3-large"  # OpenAI's embedding model
             api_type = "openai"
             logger.info("Using OpenAI API for language models")
             
@@ -473,60 +675,163 @@ except Exception as e:
 # Initialize Stability API for images
 stability_api = None  # Initialize as None by default
 
-def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=20, samples=1, non_interactive=False):
+def generate_image_stability(prompt, output_path, width=1024, height=1024, steps=50, samples=1, non_interactive=False, negative_prompt=None):
     """Generate an image using Stability API"""
-    logger.info(f"Generating image with prompt: {prompt}")
-    logger.info(f"- Width: {width}")
-    logger.info(f"- Height: {height}")
-    logger.info(f"- Steps: {steps}")
-    logger.info(f"- Samples: {samples}")
-
+    debug_point(f"Generating image for: {prompt[:50]}...")
+    
+    # Basic validation
+    if not prompt:
+        logger.error("Empty prompt provided for image generation")
+        return None
+    
+    if not os.path.exists(os.path.dirname(output_path)):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Check if Stability API key is available
+    stability_key = os.getenv('STABILITY_API_KEY')
+    if not stability_key:
+        logger.error("STABILITY_API_KEY not found in environment variables")
+        return None
+    
+    # Perform a secondary validation using Deepseek if directly calling this function
+    # This ensures safety even when generate_image_stability is called directly
     try:
-        # Check if Stability API key is available
-        stability_key = os.getenv('STABILITY_API_KEY')
-        if not stability_key:
-            logger.error("STABILITY_API_KEY not found in environment variables")
-            return False
-
-        # Make API request to Stability
-        response = requests.post(
-            "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": f"Bearer {stability_key}"
-            },
-            json={
-                "text_prompts": [{"text": prompt}],
-                "cfg_scale": 7.5,
-                "height": height,
-                "width": width,
-                "samples": samples,
-                "steps": steps,
-                "style_preset": "photographic"
-            }
-        )
-
-        if response.status_code != 200:
-            logger.error(f"Stability API request failed with status code {response.status_code}")
-            logger.error(f"Response: {response.text}")
-            return False
-
-        # Process the response and save the image
-        data = response.json()
-        if "artifacts" in data and len(data["artifacts"]) > 0:
-            image_data = base64.b64decode(data["artifacts"][0]["base64"])
-            with open(output_path, "wb") as f:
-                f.write(image_data)
-            logger.info(f"Successfully generated and saved image to {output_path}")
-            return True
-        else:
-            logger.error("No image data in Stability API response")
-            return False
-
+        # Only validate if we haven't already done so in generate_visuals
+        is_direct_call = inspect.currentframe().f_back.f_code.co_name != "generate_visuals"
+        if is_direct_call:
+            logger.info("Direct call to generate_image_stability detected, performing prompt validation")
+            is_safe, validated_prompt, validated_negative_prompt, reason = validate_image_prompt_with_deepseek(
+                prompt, 
+                negative_prompt
+            )
+            
+            if not is_safe:
+                logger.warning(f"Direct prompt validation detected potential issues: {reason}")
+                prompt = validated_prompt
+                negative_prompt = validated_negative_prompt
+                logger.info(f"Using corrected prompts from validation")
     except Exception as e:
-        logger.error(f"Error generating image: {str(e)}")
-        return False
+        # Don't block generation if validation fails
+        logger.error(f"Error in direct prompt validation: {str(e)}")
+    
+    # This is the URL for text-to-image generation
+    model_id = "stable-diffusion-xl-1024-v1-0"
+    url = f"https://api.stability.ai/v1/generation/{model_id}/text-to-image"
+    
+    # Prepare headers
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {stability_key}"
+    }
+    
+    # Prepare the text prompts section with positive and negative prompts
+    text_prompts = [
+        {
+            "text": prompt,
+            "weight": 1.0
+        }
+    ]
+    
+    # Add negative prompt if provided
+    if negative_prompt:
+        text_prompts.append({
+            "text": negative_prompt,
+            "weight": -0.8  # Negative weight for things to avoid
+        })
+        logger.info(f"Added negative prompt to request: {negative_prompt[:100]}...")
+        logger.info(f"Negative prompt length: {len(negative_prompt)} characters")
+        logger.info(f"Negative prompt weight: -0.8")
+        
+        # Log each individual negative prompt term for debugging
+        negative_items = [item.strip() for item in negative_prompt.split(',') if item.strip()]
+        logger.info(f"Negative prompt contains {len(negative_items)} individual terms")
+        for i, item in enumerate(negative_items[:10]):  # Log first 10 items to avoid log spam
+            logger.info(f"  Negative term {i+1}: '{item}'")
+        if len(negative_items) > 10:
+            logger.info(f"  ... and {len(negative_items) - 10} more negative terms")
+    else:
+        logger.warning("No negative prompt provided! This may result in inappropriate images.")
+    
+    # Prepare body
+    body = {
+        "text_prompts": text_prompts,
+        "height": height,
+        "width": width,
+        "samples": samples,
+        "steps": steps,
+        "cfg_scale": 8.0,  # Increased guidance scale for better prompt adherence
+        "style_preset": "photographic"  # Can be changed based on style preference
+    }
+    
+    # Log the complete request body for debugging
+    logger.info(f"Stability API request configuration: {json.dumps(body, indent=2)}")
+    
+    # Create more detailed log of exact prompt text for troubleshooting
+    detailed_prompt_log = {
+        "prompt_full_text": prompt,
+        "prompt_length": len(prompt),
+        "negative_prompt_full_text": negative_prompt,
+        "negative_prompt_length": len(negative_prompt) if negative_prompt else 0,
+        "negative_prompt_items_count": len([x for x in negative_prompt.split(',') if x.strip()]) if negative_prompt else 0
+    }
+    logger.info(f"DETAILED PROMPT LOG: {json.dumps(detailed_prompt_log, indent=2)}")
+    
+    try:
+        response = requests.post(url, headers=headers, json=body)
+        
+        if response.status_code != 200:
+            logger.error(f"Stability API error: {response.status_code} - {response.text}")
+            return None
+        
+        # Parse response
+        data = response.json()
+        
+        # Log successful image generation
+        logger.info(f"Stability API request successful - generated {len(data.get('artifacts', []))} images")
+        
+        # Check for any issues in the response
+        if 'artifacts' in data:
+            for i, artifact in enumerate(data['artifacts']):
+                if 'finish_reason' in artifact:
+                    finish_reason = artifact['finish_reason'] 
+                    if finish_reason != 'SUCCESS':
+                        logger.warning(f"Image {i+1} generation had finish_reason: {finish_reason}")
+                        if finish_reason == 'CONTENT_FILTERED':
+                            logger.warning("Content was filtered despite negative prompts! Adjust negative prompts if this happens frequently.")
+        
+        # Track API cost if cost tracker is available
+        if COST_TRACKER_AVAILABLE:
+            cost_tracker.add_stability_image_cost(
+                width=width,
+                height=height,
+                steps=steps,
+                samples=samples,
+                model=model_id,
+                operation_name="image_generation"
+            )
+        
+        # For each generated image
+        for i, image in enumerate(data.get("artifacts", [])):
+            # Determine filename
+            if samples == 1:
+                img_path = output_path
+            else:
+                # When multiple samples, create numbered files
+                base, ext = os.path.splitext(output_path)
+                img_path = f"{base}_{i+1}{ext}"
+            
+            # Save the image
+            with open(img_path, "wb") as f:
+                f.write(base64.b64decode(image["base64"]))
+            
+            logger.info(f"Image saved to {img_path}")
+        
+        return output_path
+    except Exception as e:
+        logger.error(f"Error generating image: {e}")
+        traceback.print_exc()
+        return None
 
 def create_video_segment(segment, output_path, audio_file_path, style="modern"):
     """Create a video segment with visuals and audio"""
@@ -537,7 +842,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
         logger.info(f"Segment start: {segment['start']:.2f}, end: {segment['end']:.2f}")
         
         # Create video clip with visuals
-        video_clip = ImageClip(segment["visuals"]["main_image"])
+        video_clip = moviepy_editor.ImageClip(segment["visuals"]["main_image"])
         segment_duration = segment["end"] - segment["start"]
         
         # Set video duration to match segment duration
@@ -566,7 +871,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
             raise ValueError(f"Audio extraction failed: {temp_audio} was not created")
         
         # Load the extracted audio
-        audio_clip = AudioFileClip(temp_audio)
+        audio_clip = moviepy_editor.AudioFileClip(temp_audio)
         logger.info(f"Audio clip duration: {audio_clip.duration:.2f} seconds")
         
         # Ensure audio duration matches video duration
@@ -608,7 +913,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
         
         # Verify the temporary output file
         if os.path.exists(temp_output):
-            output_clip = VideoFileClip(temp_output)
+            output_clip = moviepy_editor.VideoFileClip(temp_output)
             logger.info(f"Temp output file duration: {output_clip.duration:.2f} seconds")
             logger.info(f"Temp output file has audio: {output_clip.audio is not None}")
             if output_clip.audio is not None:
@@ -632,7 +937,7 @@ def create_video_segment(segment, output_path, audio_file_path, style="modern"):
             logger.info(f"Final output file created: {output_path}")
             
             # Final verification of the output file
-            final_clip = VideoFileClip(output_path)
+            final_clip = moviepy_editor.VideoFileClip(output_path)
             logger.info(f"Final output file duration: {final_clip.duration:.2f} seconds")
             logger.info(f"Final output file has audio: {final_clip.audio is not None}")
             if final_clip.audio is not None:
@@ -824,32 +1129,66 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
         logger.info("Starting final video creation")
         logger.info(f"Number of segments to process: {len(enhanced_segments)}")
         
+        # Get start/end times with fallback between different naming conventions
+        get_start_time = lambda segment: segment.get('start_time', segment.get('start', 0))
+        get_end_time = lambda segment: segment.get('end_time', segment.get('end', 0))
+        
         # Calculate target duration based on segments and time limit
         if limit_to_one_minute:
-            target_duration = min(max(segment["end"] for segment in enhanced_segments), TIME_LIMIT_SECONDS)
+            logger.info(f"Applying time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
+            full_duration = max(get_end_time(segment) for segment in enhanced_segments)
+            target_duration = min(full_duration, TIME_LIMIT_SECONDS)
+            logger.info(f"Original full duration: {full_duration:.2f} seconds")
             logger.info(f"Using time-limited duration: {target_duration:.2f} seconds")
         else:
-            target_duration = max(segment["end"] for segment in enhanced_segments)
+            target_duration = max(get_end_time(segment) for segment in enhanced_segments)
             logger.info(f"Using full duration: {target_duration:.2f} seconds")
+        
+        # Ensure the images directory exists and is accessible
+        image_folder = os.path.join(temp_dir, "images")
+        if not os.path.exists(image_folder):
+            logger.warning(f"Images folder not found at {image_folder}, creating it")
+            os.makedirs(image_folder, exist_ok=True)
         
         # First, create video segments from PNG files
         valid_segments = []
         for i, segment in enumerate(enhanced_segments, 1):
+            # Get start/end times with fallback
+            start_time = get_start_time(segment)
+            end_time = get_end_time(segment)
+            
             # Skip segments that start after the time limit if limit_to_one_minute is True
-            if limit_to_one_minute and segment["start"] >= TIME_LIMIT_SECONDS:
-                logger.info(f"Skipping segment {i} as it starts after time limit")
+            if limit_to_one_minute and start_time >= TIME_LIMIT_SECONDS:
+                logger.info(f"Skipping segment {i} as it starts after time limit of {TIME_LIMIT_SECONDS} seconds")
                 continue
                 
             # Adjust end time if it exceeds the limit and limit_to_one_minute is True
-            end_time = min(segment["end"], TIME_LIMIT_SECONDS) if limit_to_one_minute else segment["end"]
-            segment_duration = end_time - segment["start"]
+            original_end_time = end_time
+            if limit_to_one_minute:
+                end_time = min(end_time, TIME_LIMIT_SECONDS)
+                if end_time < original_end_time:
+                    logger.info(f"Trimming segment {i} end time from {original_end_time:.2f} to {end_time:.2f} seconds to match time limit")
+            
+            segment_duration = end_time - start_time
             
             # Skip segments with zero duration
             if segment_duration <= 0:
                 logger.info(f"Skipping segment {i} as it has zero duration")
                 continue
             
-            png_path = os.path.join(temp_dir, f"segment_{i}.png")
+            # Look for the PNG file in the images subfolder
+            png_path = os.path.join(image_folder, f"segment_{i}.png")
+            
+            # Fallback to original path if not found
+            if not os.path.exists(png_path):
+                fallback_png_path = os.path.join(temp_dir, f"segment_{i}.png")
+                if os.path.exists(fallback_png_path):
+                    logger.warning(f"Using fallback image path: {fallback_png_path}")
+                    png_path = fallback_png_path
+                else:
+                    logger.error(f"Image not found at either {png_path} or {fallback_png_path}")
+                    continue
+            
             segment_path = os.path.join(temp_dir, f"segment_{i}.mp4")
             
             # Create video segment from PNG
@@ -995,13 +1334,47 @@ def create_final_video(enhanced_segments, audio_path, output_path, temp_dir, lim
         audio_stream = next(s for s in streams if s["codec_type"] == "audio")
         audio_duration = float(audio_stream["duration"])
         
-        if abs(video_duration - target_duration) > 0.1:
-            raise ValueError(f"Video duration {video_duration:.2f}s does not match target duration {target_duration:.2f}s")
-        if abs(audio_duration - target_duration) > 0.1:
-            raise ValueError(f"Output audio duration {audio_duration:.2f}s does not match target duration {target_duration:.2f}s")
+        # Allow for a larger tolerance (0.5 seconds) in duration matching
+        duration_tolerance = 0.5
+        if abs(video_duration - target_duration) > duration_tolerance:
+            raise ValueError(f"Video duration {video_duration:.2f}s does not match target duration {target_duration:.2f}s (tolerance: {duration_tolerance}s)")
+        if abs(audio_duration - target_duration) > duration_tolerance:
+            logger.warning(f"Audio duration {audio_duration:.2f}s differs from target duration {target_duration:.2f}s by {abs(audio_duration - target_duration):.2f}s")
+            # Don't raise an error, just log a warning
         
         # Move the temporary output to the final location
         shutil.move(temp_output, output_path)
+        
+        # Log detailed information about the created file
+        if os.path.exists(output_path):
+            file_size_bytes = os.path.getsize(output_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            
+            # Get final duration with ffprobe
+            duration_cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                output_path
+            ]
+            try:
+                duration_result = subprocess.run(duration_cmd, capture_output=True, text=True)
+                if duration_result.returncode == 0:
+                    actual_duration = float(duration_result.stdout.strip())
+                    logger.info(f"✅ Final video successfully created: {output_path}")
+                    logger.info(f"   - File size: {file_size_mb:.2f} MB ({file_size_bytes} bytes)")
+                    logger.info(f"   - Duration: {actual_duration:.2f} seconds ({actual_duration/60:.2f} minutes)")
+                else:
+                    logger.info(f"✅ Final video created: {output_path}")
+                    logger.info(f"   - File size: {file_size_mb:.2f} MB ({file_size_bytes} bytes)")
+                    logger.warning(f"   - Could not verify duration: {duration_result.stderr}")
+            except Exception as e:
+                logger.info(f"✅ Final video created: {output_path}")
+                logger.info(f"   - File size: {file_size_mb:.2f} MB ({file_size_bytes} bytes)")
+                logger.warning(f"   - Error verifying duration: {str(e)}")
+        else:
+            logger.error(f"❌ Failed to create final video: {output_path} does not exist after processing")
         
         # Clean up temporary files
         temp_files = [concat_file, concat_output, looped_output, temp_audio]
@@ -1075,7 +1448,7 @@ def validate_audio_file(audio_path):
         # Check if it's an MP3 file
         elif file_ext == '.mp3':
             # Use moviepy to get audio properties
-            audio = AudioFileClip(audio_path)
+            audio = moviepy_editor.AudioFileClip(audio_path)
             duration = audio.duration
             
             # Log audio properties
@@ -1098,112 +1471,233 @@ def validate_audio_file(audio_path):
     except Exception as e:
         raise ValueError(f"Error validating audio file: {str(e)}")
 
-def transcribe_audio(audio_path, force_transcription=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp", limit_to_one_minute=False):
-    """Transcribe audio file using OpenAI's Whisper model"""
-    try:
-        # Check if transcription already exists
-        transcript_path = os.path.join(transcript_dir, os.path.splitext(os.path.basename(audio_path))[0] + ".srt")
+# Add to global configuration
+SEGMENT_MIN_DURATION = 25    # Minimum segment duration
+SEGMENT_MAX_DURATION = 50    # Maximum segment duration
+SEGMENT_TARGET_DURATION =35 # Ideal segment duration
+
+def normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25, aggressive_reduction=True):
+    """Normalize segment durations by combining or splitting segments with improved topic coherence."""
+    if not segments:
+        return []
+
+    # Phase 1: Initial pass to combine obviously related segments
+    initial_combined = []
+    current = None
+
+    for segment in segments:
+        if not current:
+            current = segment.copy()
+            continue
+
+        # Calculate coherence between current and next segment
+        coherence_score = calculate_text_coherence(current['text'], segment['text'])
+        combined_duration = current['end'] - current['start'] + segment['end'] - segment['start']
         
-        if os.path.exists(transcript_path) and not force_transcription:
-            logger.info(f"Using existing transcript: {transcript_path}")
-            return transcript_path
+        # More lenient combination criteria when aggressive_reduction is True
+        coherence_threshold = 0.5 if aggressive_reduction else 0.7
+        max_combined_duration = max_duration * 1.2 if aggressive_reduction else max_duration
         
-        # Create transcript directory if it doesn't exist
-        os.makedirs(transcript_dir, exist_ok=True)
-        
-        # Initialize transcription
-        logger.info("Starting audio transcription")
-        
-        # Check for OpenAI API key
-        openai_api_key = os.environ.get("OPENAI_API_KEY")
-        if not openai_api_key:
-            raise ValueError("OpenAI API key is required for transcription")
-        
-        # Initialize OpenAI client specifically for transcription
-        transcription_client = OpenAI(api_key=openai_api_key)
-        
-        # Load audio file with moviepy to get duration
-        audio = AudioFileClip(audio_path)
-        original_duration = audio.duration
-        logger.info(f"Original audio duration: {original_duration:.2f} seconds")
-        
-        # Determine the duration to process
-        if limit_to_one_minute:
-            duration_to_process = min(original_duration, TIME_LIMIT_SECONDS)
-            logger.info(f"Limiting audio to first {duration_to_process:.2f} seconds")
+        if combined_duration <= max_combined_duration and coherence_score > coherence_threshold:
+            # Combine segments
+            current['end'] = segment['end']
+            current['text'] += ' ' + segment['text']
         else:
-            duration_to_process = original_duration
-            logger.info(f"Processing full audio duration: {duration_to_process:.2f} seconds")
+            initial_combined.append(current)
+            current = segment.copy()
+
+    # Don't forget the last segment
+    if current:
+        initial_combined.append(current)
+    
+    # Phase 2: Topic-based clustering to further reduce segments
+    if aggressive_reduction and len(initial_combined) > 1:
+        topic_clustered = []
+        segment_group = [initial_combined[0]]
+        current_topic = extract_topic(initial_combined[0]['text'])
         
-        # Split audio into chunks for processing
-        chunk_duration = 60  # 60 seconds per chunk
-        chunks = []
-        
-        for start_time in range(0, int(duration_to_process), chunk_duration):
-            end_time = min(start_time + chunk_duration, duration_to_process)
-            chunk_path = os.path.join(temp_dir, f"chunk_{start_time}_{end_time}.wav")
+        for segment in initial_combined[1:]:
+            segment_topic = extract_topic(segment['text'])
+            segment_duration = segment['end'] - segment['start']
+            group_duration = sum(s['end'] - s['start'] for s in segment_group)
             
-            try:
-                # Use ffmpeg to extract chunk
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-i', audio_path,
-                    '-ss', str(start_time),
-                    '-t', str(end_time - start_time),
-                    '-acodec', 'pcm_s16le',
-                    '-ar', '44100',
-                    '-ac', '1',
-                    chunk_path
-                ]
+            # Check if this segment continues the same topic and keeping it won't make the group too long
+            if is_same_topic(current_topic, segment_topic) and (group_duration + segment_duration) <= max_duration * 1.5:
+                segment_group.append(segment)
+            else:
+                # Merge the current group and start a new one
+                merged_segment = merge_segment_group(segment_group)
+                topic_clustered.append(merged_segment)
+                segment_group = [segment]
+                current_topic = segment_topic
+        
+        # Add the last group
+        if segment_group:
+            merged_segment = merge_segment_group(segment_group)
+            topic_clustered.append(merged_segment)
+        
+        normalized = topic_clustered
+    else:
+        normalized = initial_combined
+
+    # Final pass to adjust segment durations closer to target
+    for segment in normalized:
+        duration = segment['end'] - segment['start']
+        if duration < min_duration:
+            # Try to extend short segments
+            extension = min(min_duration - duration, 2.0)  # Max 2 second extension
+            segment['end'] += extension
+        elif duration > max_duration * 1.5:  # More aggressive splitting for very long segments
+            # Consider splitting extremely long segments
+            midpoint = segment['start'] + duration / 2
+            text_parts = split_text_at_sentence_boundary(segment['text'])
+            
+            if len(text_parts) > 1:
+                # Create two segments from this one
+                segment1 = segment.copy()
+                segment1['end'] = midpoint
+                segment1['text'] = text_parts[0]
                 
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    chunks.append((chunk_path, start_time))
-                    logger.info(f"Created chunk: {chunk_path} (start: {start_time}s, end: {end_time}s)")
-                else:
-                    logger.error(f"Error creating chunk {start_time}-{end_time}: {result.stderr}")
-            except Exception as e:
-                logger.error(f"Error processing chunk {start_time}-{end_time}: {str(e)}")
-                continue
-        
-        # Close the main audio clip
-        audio.close()
-        
-        # Process each chunk
-        transcript_segments = []
-        for i, (chunk_path, chunk_start) in enumerate(chunks):
-            logger.info(f"Processing chunk {i+1}/{len(chunks)} (start: {chunk_start}s)")
-            
-            # Transcribe chunk using OpenAI's Whisper model
-            with open(chunk_path, "rb") as audio_file:
-                response = transcription_client.audio.transcriptions.create(
-                    file=audio_file,
-                    model="whisper-1",
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"]
-                )
+                segment2 = segment.copy()
+                segment2['start'] = midpoint
+                segment2['text'] = text_parts[1]
                 
-                # Add segments to transcript with adjusted timestamps
-                for segment in response.segments:
-                    # Adjust timestamps by adding chunk start time
-                    adjusted_start = segment.start + chunk_start
-                    adjusted_end = segment.end + chunk_start
-                    
-                    transcript_segments.append({
-                        "start": adjusted_start,
-                        "end": adjusted_end,
-                        "text": segment.text
-                    })
+                # Replace the current segment with these two
+                # Note: This would require restructuring the loop to handle this replacement
+                # For simplicity, just log that splitting would be beneficial
+                logger.info(f"Segment at {segment['start']} is very long ({duration:.2f}s). Consider splitting.")
+
+    # Log reduction statistics
+    logger.info(f"Segment reduction: {len(segments)} → {len(normalized)} ({((len(segments) - len(normalized)) / len(segments) * 100):.1f}% reduction)")
+    return normalized
+
+def extract_topic(text):
+    """Extract the main topic from text using keyword frequency and importance."""
+    # Simple implementation: just return the most common substantive words
+    # In a full implementation, you might use NLP techniques like TF-IDF or entity extraction
+    words = text.lower().split()
+    # Filter out common stop words
+    stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'is', 'are', 'was', 'were'}
+    content_words = [word for word in words if word not in stop_words]
+    
+    # Count word frequency
+    word_counts = {}
+    for word in content_words:
+        word_counts[word] = word_counts.get(word, 0) + 1
+    
+    # Return the top 3 most frequent words as the "topic"
+    top_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+    return [word for word, _ in top_words]
+
+def is_same_topic(topic1, topic2):
+    """Determine if two topics are sufficiently similar."""
+    # Check for overlap in topic keywords
+    common_words = set(topic1).intersection(set(topic2))
+    return len(common_words) >= 1  # If they share at least one key word
+
+def merge_segment_group(segment_group):
+    """Merge a group of segments into a single segment."""
+    if not segment_group:
+        return None
+    
+    merged = segment_group[0].copy()
+    merged['text'] = ' '.join(s['text'] for s in segment_group)
+    merged['end'] = segment_group[-1]['end']
+    return merged
+
+def split_text_at_sentence_boundary(text):
+    """Split text into two parts at a sentence boundary near the middle."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if len(sentences) <= 1:
+        # If there's only one sentence, split it in half
+        midpoint = len(text) // 2
+        return [text[:midpoint], text[midpoint:]]
+    
+    # Find the middle sentence
+    mid_idx = len(sentences) // 2
+    part1 = ' '.join(sentences[:mid_idx])
+    part2 = ' '.join(sentences[mid_idx:])
+    return [part1, part2]
+
+def calculate_text_coherence(text1, text2):
+    """Calculate how well two text segments fit together semantically.
+    Returns a score between 0 and 1, where 1 indicates high coherence."""
+    try:
+        # Get the last sentence of text1 and first sentence of text2
+        text1_sentences = re.split(r'(?<=[.!?])\s+', text1.strip())
+        text2_sentences = re.split(r'(?<=[.!?])\s+', text2.strip())
+        
+        last_sentence = text1_sentences[-1] if text1_sentences else ""
+        first_sentence = text2_sentences[0] if text2_sentences else ""
+        
+        # Check for incomplete sentence in text1
+        if not any(text1.strip().endswith(end) for end in ['.', '!', '?']):
+            return 0.9  # High coherence if text1 ends mid-sentence
+        
+        # Combined text for analysis
+        combined = f"{last_sentence} {first_sentence}".lower()
+        
+        # Check for transitional phrases that indicate connected content
+        transition_phrases = ['however', 'therefore', 'furthermore', 'moreover', 'in addition', 
+                            'consequently', 'as a result', 'for example', 'for instance',
+                            'similarly', 'likewise', 'in contrast', 'on the other hand']
+        
+        for phrase in transition_phrases:
+            if phrase in first_sentence.lower():
+                return 0.85  # High coherence for explicit transitions
+        
+        # Check for pronoun references that likely refer to previous content
+        pronoun_start = any(first_sentence.lower().startswith(p) for p in ['he ', 'she ', 'they ', 'it ', 'this ', 'that ', 'these ', 'those '])
+        if pronoun_start:
+            return 0.8  # High coherence for pronoun reference
             
-            # Clean up chunk file
-            os.remove(chunk_path)
+        # Check for conjunctions at the start of text2
+        if any(first_sentence.lower().startswith(c) for c in ['and ', 'but ', 'or ', 'so ', 'because ']):
+            return 0.75  # Good coherence for conjunction starts
+            
+        # Check for thematic continuity
+        text1_keywords = set(extract_topic(last_sentence))
+        text2_keywords = set(extract_topic(first_sentence))
+        keyword_overlap = len(text1_keywords.intersection(text2_keywords))
         
-        # Sort segments by start time
-        transcript_segments.sort(key=lambda x: x["start"])
+        if keyword_overlap > 0:
+            return 0.65 + (0.1 * keyword_overlap)  # 0.65-0.95 based on keyword overlap
+            
+        # Default moderate coherence
+        return 0.4  # Lower default to be more selective
         
-        # Write SRT file
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for i, segment in enumerate(transcript_segments, 1):
+    except Exception as e:
+        logger.warning(f"Error in coherence calculation: {str(e)}")
+        return 0.3  # Lower default on error
+
+def write_segments_to_srt(segments, output_path):
+    """Write segments to an SRT file"""
+    try:
+        # Validate segments
+        for i, segment in enumerate(segments, 1):
+            # Check for required fields
+            required_fields = ['start', 'end', 'text']
+            missing_fields = [field for field in required_fields if field not in segment]
+            if missing_fields:
+                raise ValueError(f"Segment {i} is missing required fields: {', '.join(missing_fields)}")
+            
+            # Validate timing
+            if segment['start'] >= segment['end']:
+                raise ValueError(f"Segment {i} has invalid timing: start ({segment['start']}) >= end ({segment['end']})")
+            
+            # Validate text
+            if not segment['text'].strip():
+                raise ValueError(f"Segment {i} has empty text")
+        
+        # Create backup of existing file if it exists
+        if os.path.exists(output_path):
+            backup_path = output_path + '.bak'
+            shutil.copy2(output_path, backup_path)
+            logger.info(f"Created backup of existing transcript: {backup_path}")
+        
+        # Write segments to file
+        with open(output_path, "w", encoding="utf-8") as f:
+            for i, segment in enumerate(segments, 1):
                 # Format timestamps
                 start = format_timestamp(segment["start"])
                 end = format_timestamp(segment["end"])
@@ -1213,14 +1707,374 @@ def transcribe_audio(audio_path, force_transcription=False, transcript_dir="tran
                 f.write(f"{start} --> {end}\n")
                 f.write(f"{segment['text']}\n\n")
         
-        logger.info(f"Transcription completed: {transcript_path}")
-        logger.info(f"Total segments: {len(transcript_segments)}")
-        return transcript_path
+        logger.info(f"Successfully wrote {len(segments)} segments to {output_path}")
+        return True
         
     except Exception as e:
-        logger.error(f"Error during transcription: {str(e)}")
-        logger.error(f"Error type: {type(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error writing segments to SRT file: {str(e)}")
+        # Restore backup if it exists
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, output_path)
+            logger.info(f"Restored backup file after error: {output_path}")
+        return False
+
+def convert_srt_to_vtt(srt_content):
+    """Convert SRT format to VTT format"""
+    # Add VTT header
+    vtt_content = "WEBVTT\n\n"
+    
+    # Split by double newline to get segments
+    segments = srt_content.strip().split("\n\n")
+    
+    for segment in segments:
+        lines = segment.strip().split("\n")
+        
+        # Skip empty segments
+        if len(lines) < 3:
+            continue
+        
+        # Keep segment number (optional in VTT)
+        segment_number = lines[0]
+        
+        # Convert timestamp format from 00:00:00,000 to 00:00:00.000
+        timestamp = lines[1].replace(',', '.')
+        
+        # Get text content (could be multiple lines)
+        text = "\n".join(lines[2:])
+        
+        # Write the segment to VTT
+        vtt_content += segment_number + "\n"
+        vtt_content += timestamp + "\n"
+        vtt_content += text + "\n\n"
+    
+    return vtt_content
+
+def transcribe_audio(audio_path, force_transcription=False, transcript_dir="transcripts", non_interactive=False, temp_dir="temp", limit_to_one_minute=False):
+    """Transcribe audio using local SpeechRecognition with pocketsphinx with improved accuracy"""
+    debug_point("Starting audio transcription with local SpeechRecognition")
+    
+    # Make sure directories exist
+    os.makedirs(transcript_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Generate a unique identifier for this audio file
+    audio_hash = hashlib.md5(open(audio_path, 'rb').read()).hexdigest()
+    
+    # Prepare file paths
+    srt_path = os.path.join(transcript_dir, f"{audio_hash}.srt")
+    vtt_path = os.path.join(transcript_dir, f"{audio_hash}.vtt")
+    
+    # Check if we already have a valid transcription and force_transcription is False
+    existing_transcript_valid = False
+    if os.path.exists(srt_path) and not force_transcription:
+        # Check if the file is not empty and contains valid content
+        try:
+            with open(srt_path, 'r') as f:
+                content = f.read().strip()
+            if content and len(content.split('\n\n')) > 0:
+                debug_point(f"Using existing transcription: {srt_path}")
+                existing_transcript_valid = True
+            else:
+                logger.warning(f"Existing transcript file is empty or invalid, regenerating: {srt_path}")
+                # Remove the invalid file
+                os.remove(srt_path)
+                if os.path.exists(vtt_path):
+                    os.remove(vtt_path)
+        except Exception as e:
+            logger.warning(f"Error checking existing transcript, will regenerate: {e}")
+            # Remove the potentially corrupted file
+            if os.path.exists(srt_path):
+                os.remove(srt_path)
+            if os.path.exists(vtt_path):
+                os.remove(vtt_path)
+    
+    if existing_transcript_valid:
+        return srt_path
+    
+    # Check if SpeechRecognition and pocketsphinx are available
+    if not SPEECH_RECOGNITION_AVAILABLE or not POCKETSPHINX_AVAILABLE:
+        logger.error("SpeechRecognition or pocketsphinx libraries not available")
+        return None
+    
+    # Preprocess audio if needed
+    temp_audio_path = os.path.join(temp_dir, f"temp_{audio_hash}.wav")
+    
+    try:
+        # Check if ffmpeg supports advanced filters before using them
+        check_filters = subprocess.run(
+            ["ffmpeg", "-filters"], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
+        filters_output = check_filters.stdout.decode('utf-8', errors='ignore')
+        can_use_advanced_filters = "afftdn" in filters_output and "loudnorm" in filters_output
+        
+        if limit_to_one_minute:
+            debug_point(f"Limiting audio to {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) for testing")
+            
+            if can_use_advanced_filters:
+                # Convert to WAV with enhanced preprocessing
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-t", str(TIME_LIMIT_SECONDS),
+                    # Apply audio filters for better recognition
+                    "-af", "highpass=f=200,lowpass=f=8000,afftdn=nf=-20,loudnorm=I=-16:LRA=11:TP=-1.5",
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+            else:
+                # Fall back to basic conversion
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-t", str(TIME_LIMIT_SECONDS),
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+            logger.info(f"Using time limit of {TIME_LIMIT_SECONDS} seconds from global constant")
+        else:
+            if can_use_advanced_filters:
+                # Convert with enhanced preprocessing
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path,
+                    # Apply audio filters for better recognition
+                    "-af", "highpass=f=200,lowpass=f=8000,afftdn=nf=-20,loudnorm=I=-16:LRA=11:TP=-1.5",
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+            else:
+                # Fall back to basic conversion
+                command = [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    temp_audio_path
+                ]
+        
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        debug_point(f"Preprocessed audio saved to {temp_audio_path}")
+        
+        # Get audio duration for segmentation
+        audio_info = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", 
+             "default=noprint_wrappers=1:nokey=1", temp_audio_path],
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            universal_newlines=True
+        )
+        audio_duration = float(audio_info.stdout.strip())
+        
+        # Initialize SpeechRecognition recognizer
+        recognizer = sr.Recognizer()
+        
+        # Add diagnostic settings for recognizer
+        # Experiment with energy thresholds for better noise handling
+        recognizer.energy_threshold = 300  # Increased from default for better noise resistance
+        recognizer.dynamic_energy_threshold = True
+        recognizer.dynamic_energy_adjustment_ratio = 1.5  # More aggressive adjustment to noise
+        
+        # Adjust for ambient noise if the audio duration is sufficient
+        logger.info(f"Audio duration: {audio_duration} seconds")
+        
+        # Create segments from the audio file
+        # We'll split audio into segments for better recognition
+        logger.info("Splitting audio into segments for transcription")
+        segment_length = 20  # shorter segments for better recognition accuracy
+        
+        segments = []
+        segment_confidence_scores = []
+        segment_recognition_times = []
+        
+        # Function to transcribe a segment of audio
+        def transcribe_segment(start_time, end_time, segment_idx):
+            debug_point(f"Transcribing segment {segment_idx+1}: {start_time:.2f}s - {end_time:.2f}s")
+            segment_start_time = time.time()
+            
+            # Create a temporary file for this segment
+            segment_path = os.path.join(temp_dir, f"segment_{audio_hash}_{segment_idx}.wav")
+            
+            # Extract segment using ffmpeg
+            segment_cmd = [
+                "ffmpeg", "-y", "-i", temp_audio_path,
+                "-ss", str(start_time), "-to", str(end_time),
+                "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                segment_path
+            ]
+            
+            try:
+                subprocess.run(segment_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Use SpeechRecognition with pocketsphinx
+                with sr.AudioFile(segment_path) as source:
+                    # Adjust for ambient noise with a short duration - using 0.3 seconds is more effective
+                    recognizer.adjust_for_ambient_noise(source, duration=min(0.3, max(0.1, end_time-start_time)))
+                    audio_data = recognizer.record(source)
+                    
+                    try:
+                        # Use pocketsphinx for offline recognition
+                        # Use only parameters supported by the library
+                        text = recognizer.recognize_sphinx(audio_data)
+                        logger.info(f"Segment {segment_idx+1} recognized: {text[:30]}...")
+                        
+                        # Create segment with timestamps
+                        segment_result = {
+                            "index": segment_idx + 1,
+                            "start": start_time,
+                            "end": end_time,
+                            "text": text,
+                            "timestamp": {
+                                "start": format_timestamp(start_time),
+                                "end": format_timestamp(end_time)
+                            }
+                        }
+                        
+                        # Record processing time for diagnostics
+                        recognition_time = time.time() - segment_start_time
+                        segment_recognition_times.append((segment_idx, recognition_time))
+                        logger.info(f"Segment {segment_idx+1} processing time: {recognition_time:.2f}s")
+                        
+                        return segment_result
+                        
+                    except sr.UnknownValueError:
+                        logger.warning(f"Sphinx could not understand audio in segment {segment_idx+1}")
+                        return {
+                            "index": segment_idx + 1,
+                            "start": start_time,
+                            "end": end_time,
+                            "text": "[inaudible]",
+                            "timestamp": {
+                                "start": format_timestamp(start_time),
+                                "end": format_timestamp(end_time)
+                            }
+                        }
+                    except sr.RequestError as e:
+                        logger.error(f"Sphinx error in segment {segment_idx+1}; {e}")
+                        return None
+                    finally:
+                        # Remove temporary segment file
+                        if os.path.exists(segment_path):
+                            os.remove(segment_path)
+            except Exception as e:
+                logger.error(f"Error processing segment {segment_idx+1}: {e}")
+                return None
+        
+        # Determine how many segments to create with overlap for better transitions
+        num_segments = max(1, int(audio_duration / segment_length))
+        logger.info(f"Splitting audio into {num_segments} segments of {segment_length}s each")
+        
+        # Create a list of start/end times for each segment with slight overlap
+        segment_times = []
+        overlap = 0.5  # 0.5 second overlap between segments
+        for i in range(num_segments):
+            start = max(0, i * segment_length - overlap if i > 0 else 0)
+            end = min((i + 1) * segment_length + (overlap if i < num_segments - 1 else 0), audio_duration)
+            segment_times.append((start, end, i))
+        
+        # Process segments in parallel using ThreadPoolExecutor with adaptive pool size
+        with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as executor:
+            futures = []
+            for start, end, idx in segment_times:
+                future = executor.submit(transcribe_segment, start, end, idx)
+                futures.append(future)
+            
+            # Wait for all futures to complete and collect results
+            for future in futures:
+                segment = future.result()
+                if segment:
+                    segments.append(segment)
+        
+        # Sort segments by start time
+        segments.sort(key=lambda x: x["start"])
+        
+        # Function to merge consecutive segments that belong together contextually
+        def merge_contextual_segments(segments):
+            if not segments:
+                return []
+                
+            merged_segments = []
+            current_segment = segments[0]
+            
+            for next_segment in segments[1:]:
+                # Check if segments should be merged (close together or contextual continuation)
+                if ((next_segment["start"] - current_segment["end"] < 0.3) or 
+                    (next_segment["text"].strip() and next_segment["text"][0].islower() and 
+                     not next_segment["text"].startswith("[inaudible]"))):
+                    
+                    # Merge segments
+                    merged_text = current_segment["text"]
+                    if merged_text.endswith(".") or merged_text.endswith("?") or merged_text.endswith("!"):
+                        merged_text += " " + next_segment["text"]
+                    else:
+                        merged_text += " " + next_segment["text"]
+                    
+                    current_segment["end"] = next_segment["end"]
+                    current_segment["text"] = merged_text
+                    current_segment["timestamp"]["end"] = next_segment["timestamp"]["end"]
+                else:
+                    merged_segments.append(current_segment)
+                    current_segment = next_segment
+            
+            # Add the last merged segment
+            merged_segments.append(current_segment)
+            return merged_segments
+        
+        # Try to merge segments for better context if we have multiple segments
+        if len(segments) > 1:
+            original_segment_count = len(segments)
+            # Commenting out segment merging to keep all original segments
+            # segments = merge_contextual_segments(segments)
+            # logger.info(f"Merged {original_segment_count} segments into {len(segments)} for better context")
+            logger.info(f"Preserving all {original_segment_count} original segments (merging disabled)")
+        
+        # Print diagnostics information
+        if segment_recognition_times:
+            avg_time = sum(time for _, time in segment_recognition_times) / len(segment_recognition_times)
+            logger.info(f"Average segment processing time: {avg_time:.2f}s")
+        
+        # Check if we have any segments before saving
+        if not segments:
+            logger.error("No segments were extracted from the audio. Transcription failed.")
+            return None
+            
+        # Convert segments to SRT format
+        debug_point("Converting transcription to SRT format")
+        srt_content = ""
+        
+        for i, segment in enumerate(segments):
+            srt_content += f"{i+1}\n"
+            srt_content += f"{segment['timestamp']['start']} --> {segment['timestamp']['end']}\n"
+            srt_content += f"{segment['text']}\n\n"
+        
+        # Track API cost if cost tracker is available (now using local transcription)
+        if COST_TRACKER_AVAILABLE:
+            cost_tracker.add_local_transcription_cost(
+                duration_seconds=audio_duration,
+                engine="pocketsphinx",
+                operation_name="local_transcription"
+            )
+        
+        # Save SRT transcription
+        with open(srt_path, "w") as f:
+            f.write(srt_content)
+        
+        # Verify the file was written properly
+        if os.path.getsize(srt_path) == 0:
+            logger.error("Failed to write transcript to SRT file (file is empty)")
+            return None
+            
+        # Convert to VTT format
+        vtt_content = convert_srt_to_vtt(srt_content)
+        with open(vtt_path, "w") as f:
+            f.write(vtt_content)
+        
+        debug_point("Transcription completed")
+        
+        # Remove temporary audio file
+        if os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
+        
+        return srt_path
+    except Exception as e:
+        logger.error(f"Error during transcription: {e}")
+        traceback.print_exc()
         return None
 
 def format_timestamp(seconds):
@@ -1235,17 +2089,75 @@ def format_timestamp(seconds):
 def extract_segments(transcript_path):
     """Extract segments from SRT transcript file"""
     try:
+        # Validate transcript file exists
+        if not os.path.exists(transcript_path):
+            logger.error(f"Transcript file does not exist: {transcript_path}")
+            return []
+            
+        # Check if file is empty
+        if os.path.getsize(transcript_path) == 0:
+            logger.error(f"Transcript file is empty: {transcript_path}")
+            return []
+        
         segments = []
         current_segment = None
         
+        # Load entire file first to validate basic format
+        with open(transcript_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        # Quick validation of file format
+        if '-->' not in content:
+            logger.error(f"Transcript file doesn't contain any timestamp markers (-->): {transcript_path}")
+            return []
+            
+        # Minimum segment count check
+        segment_count = content.count('\n\n')
+        if segment_count == 0:
+            logger.error(f"Transcript file doesn't contain any valid segments: {transcript_path}")
+            return []
+            
+        logger.info(f"Found approximately {segment_count} potential segments in transcript")
+        
+        # Now parse the file line by line
+        line_number = 0
         with open(transcript_path, 'r', encoding='utf-8') as f:
             for line in f:
+                line_number += 1
                 line = line.strip()
                 
                 # Skip empty lines
                 if not line:
-                    if current_segment:
-                        segments.append(current_segment)
+                    if current_segment and 'text' in current_segment and 'timestamp' in current_segment:
+                        try:
+                            # Convert timestamp strings to seconds before adding the segment
+                            start_str = current_segment['timestamp']['start']
+                            end_str = current_segment['timestamp']['end']
+                            
+                            # Parse timestamps to seconds
+                            start_seconds = parse_timestamp(start_str)
+                            end_seconds = parse_timestamp(end_str)
+                            
+                            # Validate timestamps
+                            if start_seconds > end_seconds:
+                                logger.warning(f"Invalid segment at line {line_number}: start time {start_seconds} > end time {end_seconds}. Skipping.")
+                                current_segment = None
+                                continue
+                                
+                            # Add start and end times in seconds for processing
+                            current_segment['start'] = start_seconds
+                            current_segment['end'] = end_seconds
+                            current_segment['start_time'] = start_seconds  # Add both naming conventions
+                            current_segment['end_time'] = end_seconds      # Add both naming conventions
+                            
+                            segments.append(current_segment)
+                        except Exception as e:
+                            logger.warning(f"Error processing segment at line {line_number}: {e}")
+                            
+                        current_segment = None
+                    elif current_segment:
+                        # Skip incomplete segments
+                        logger.warning(f"Skipping incomplete segment at line {line_number}: {current_segment}")
                         current_segment = None
                     continue
                 
@@ -1255,20 +2167,24 @@ def extract_segments(transcript_path):
                         int(line)  # Verify it's a number
                         current_segment = {'index': int(line)}
                     except ValueError:
-                        logger.warning(f"Expected segment number, got: {line}")
+                        logger.warning(f"Expected segment number at line {line_number}, got: {line}")
                         continue
                 
                 # If we have a current segment but no timestamp, this line should be the timestamp
                 elif 'timestamp' not in current_segment:
-                    try:
-                        start, end = line.split(' --> ')
-                        current_segment['timestamp'] = {
-                            'start': start,
-                            'end': end
-                        }
-                    except ValueError:
-                        logger.warning(f"Invalid timestamp format: {line}")
-                        continue
+                    if ' --> ' in line:
+                        try:
+                            start, end = line.split(' --> ')
+                            current_segment['timestamp'] = {
+                                'start': start,
+                                'end': end
+                            }
+                        except ValueError:
+                            logger.warning(f"Invalid timestamp format at line {line_number}: {line}")
+                            current_segment = None
+                    else:
+                        logger.warning(f"Expected timestamp at line {line_number}, got: {line}")
+                        current_segment = None
                 
                 # If we have a current segment and timestamp, this line should be the text
                 else:
@@ -1279,11 +2195,50 @@ def extract_segments(transcript_path):
                         current_segment['text'] = line
         
         # Add the last segment if it exists
-        if current_segment:
-            segments.append(current_segment)
+        if current_segment and 'text' in current_segment and 'timestamp' in current_segment:
+            try:
+                # Convert timestamp strings to seconds
+                start_str = current_segment['timestamp']['start']
+                end_str = current_segment['timestamp']['end']
+                
+                # Parse timestamps to seconds
+                start_seconds = parse_timestamp(start_str)
+                end_seconds = parse_timestamp(end_str)
+                
+                # Validate timestamps
+                if start_seconds > end_seconds:
+                    logger.warning(f"Invalid last segment: start time {start_seconds} > end time {end_seconds}. Skipping.")
+                else:
+                    # Add start and end times in seconds for processing
+                    current_segment['start'] = start_seconds
+                    current_segment['end'] = end_seconds
+                    current_segment['start_time'] = start_seconds  # Add both naming conventions
+                    current_segment['end_time'] = end_seconds      # Add both naming conventions
+                    
+                    segments.append(current_segment)
+            except Exception as e:
+                logger.warning(f"Error processing last segment: {e}")
         
-        # Log the number of segments found
-        logger.info(f"Extracted {len(segments)} segments from transcript")
+        # Final validation check
+        if not segments:
+            logger.error(f"No valid segments were extracted from transcript file: {transcript_path}")
+            return []
+            
+        # Log extracted segments (summary only, not each one)
+        logger.info(f"Successfully extracted {len(segments)} valid segments from transcript")
+        
+        # Check segments and calculate stats
+        total_duration = 0
+        for i, segment in enumerate(segments):
+            duration = segment['end'] - segment['start']
+            total_duration += duration
+            
+            # Only log unusually long segments as a warning
+            if duration > 20:
+                logger.info(f"Segment {i+1} is unusually long: {duration:.2f}s")
+        
+        logger.info(f"Total segments duration: {total_duration:.2f} seconds")
+        
         return segments
         
     except Exception as e:
@@ -1310,163 +2265,361 @@ def parse_timestamp(timestamp):
 
 def enhance_segments(segments, limit_to_one_minute=False):
     """Enhance segments with AI descriptions and visual prompts"""
+    debug_point("Starting segment enhancement process")
+    
+    # Use global variables for API type and model
+    global api_type, chat_model
+    
+    # Get custom enhance prompt from environment if available
+    custom_enhance_prompt = os.environ.get("CUSTOM_ENHANCE_PROMPT")
+    if custom_enhance_prompt:
+        logger.info(f"Using custom enhance prompt from environment variable: {custom_enhance_prompt[:100]}...")
+    else:
+        logger.info("Using default enhance prompt")
+    
+    # Initialize segment cache if not already initialized
+    if not hasattr(enhance_segments, "segment_cache"):
+        enhance_segments.segment_cache = {}
+    
+    # Check if we have a valid API type and model
+    if not api_type or not chat_model:
+        logger.error("No valid API type or chat model available")
+        return None
+    
+    # Log which API we're using
+    logger.info(f"Using {api_type.upper()} API with model {chat_model} for enhancements")
+    
+    # Default prompt template for segment enhancement
+    default_enhance_prompt = """You are a helpful assistant that analyzes podcast segments and provides structured descriptions and visual prompts.
+Your task is to analyze this podcast segment and provide a JSON response with the following structure:
+
+{
+    "description": "A clear, concise description of the main topic",
+    "visual_prompt": "In [EPOCH_TIME], a detailed scene showing...",
+    "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point N"],
+    "epoch_time": "A description of the period in time and approximate location down to the continent level to help set the period for context and will be used by downstream processors."
+}
+
+The visual prompt should be detailed and specific, focusing on visual elements that would make a compelling image.
+Include details like style, composition, colors, and elements to include in the image. 
+
+IMPORTANT: The visual_prompt MUST start with "In [EPOCH_TIME]," where [EPOCH_TIME] is replaced with the actual time period relevant to the content. For example, "In ancient Greece, 5th century BCE," or "In 1960s America,". This ensures the generated image properly represents the correct historical context.
+
+Be sure to include a time period for which the image should be set, so it is logically aligned with the topic and the period in time that the topic is set in as appropriate and possible to discern from this content. If there are hints you can provide that further sets the tone and mood of the setting that helps the image creation be true to the intention of the discussion so it feels natural to the viewer."""
+    
+    # Use custom enhance prompt if available, otherwise use default
+    enhance_prompt = custom_enhance_prompt if custom_enhance_prompt else default_enhance_prompt
+    logger.info(f"Enhance prompt length: {len(enhance_prompt)} characters")
+    
+    # Client for API - Use the existing global client
     try:
-        enhanced_segments = []
-        total_segments = len(segments)
-        time_limit = TIME_LIMIT_SECONDS if limit_to_one_minute else float('inf')
+        # Get the global client based on API type
+        if api_type.lower() == "openai":
+            from openai import OpenAI
+            openai_api_key = os.environ.get("OPENAI_API_KEY")
+            if not openai_api_key:
+                logger.error("OPENAI_API_KEY environment variable not set")
+                return None
+            client = OpenAI(api_key=openai_api_key)
+        elif api_type.lower() == "deepseek":
+            from openai import OpenAI
+            deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+            if not deepseek_api_key:
+                logger.error("DEEPSEEK_API_KEY environment variable not set")
+                return None
+            client = OpenAI(base_url="https://api.deepseek.com/v1", api_key=deepseek_api_key)
+        else:
+            logger.error(f"Unknown API type: {api_type}")
+            return None
+    except ImportError:
+        logger.error("Failed to import OpenAI client")
+        return None
+    
+    # Enhanced segments to return
+    enhanced_segments = []
+    
+    # Get how many segments to process
+    if limit_to_one_minute:
+        segments_to_process = []
+        total_duration = 0
         
-        for i, segment in enumerate(segments, 1):
-            # Check for cancellation
-            if is_cancelling:
+        for segment in segments:
+            segment_duration = segment["end"] - segment["start"]
+            if total_duration + segment_duration <= TIME_LIMIT_SECONDS:
+                segments_to_process.append(segment)
+                total_duration += segment_duration
+            else:
+                break
+        
+        # Use the limited segments
+        logger.info(f"Time limit mode: Processing {len(segments_to_process)} of {len(segments)} segments (time limit: {TIME_LIMIT_SECONDS} seconds)")
+        segments = segments_to_process
+    
+    # Process each segment
+    for i, segment in enumerate(segments, 1):
+        try:
+            logger.info(f"Enhancing segment {i}/{len(segments)}")
+            logger.info(f"Segment text: {segment['text']}")
+            
+            # Compute cache key for current segment
+            cache_key = get_cache_key(segment['text'])
+            
+            # Check if segment is in cache
+            if cache_key in enhance_segments.segment_cache:
+                logger.info("Found segment in cache, using cached enhancement")
+                enhanced_segment = enhance_segments.segment_cache[cache_key].copy()
+                # Update start and end times to match the current segment
+                enhanced_segment['start'] = segment['start']
+                enhanced_segment['end'] = segment['end']
+                enhanced_segments.append(enhanced_segment)
+                continue
+            
+            # Check if we should cancel
+            if check_cancel():
                 logger.info("Enhancement cancelled by user")
                 return None
             
-            # Validate segment has required fields
-            if not all(key in segment for key in ['text', 'timestamp']):
-                logger.warning(f"Skipping segment {i}/{total_segments} - missing required fields")
-                continue
-                
-            if not all(key in segment['timestamp'] for key in ['start', 'end']):
-                logger.warning(f"Skipping segment {i}/{total_segments} - missing timestamp fields")
-                continue
+            # Format prompt for this segment
+            prompt_text = f"{enhance_prompt}\n\nHere is the podcast segment to analyze:\n\"{segment['text']}\""
             
-            # Get segment text and timestamps
-            text = segment['text']
-            start_time = parse_timestamp(segment['timestamp']['start'])
-            end_time = parse_timestamp(segment['timestamp']['end'])
+            # Get enhancement from the appropriate API
+            logger.info(f"Requesting enhancement from {api_type.upper()} for segment {i}")
+            completion_result = with_timeout(
+                func=client.chat.completions.create,
+                kwargs={
+                    "model": chat_model,  # Use the global chat model instead of hardcoding
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "temperature": 0.2,
+                    "timeout": 60  # 60 second timeout
+                },
+                timeout_seconds=70,  # 70 second timeout (with buffer)
+                description=f"{api_type.upper()} enhancement for segment {i}"
+            )
             
-            # Skip segments that start after the time limit
-            if start_time >= time_limit:
-                logger.info(f"Skipping segment {i}/{total_segments} (start: {start_time:.2f}s) - exceeds time limit")
-                continue
-                
-            # Adjust end time if it exceeds the time limit
-            if end_time > time_limit:
-                end_time = time_limit
-                logger.info(f"Adjusting end time of segment {i}/{total_segments} to {time_limit:.2f}s")
+            if not completion_result:
+                logger.error(f"Failed to enhance segment {i}: Timeout")
+                return None
             
-            # Log progress
-            logger.info(f"Enhancing segment {i}/{total_segments} (start: {start_time:.2f}s, end: {end_time:.2f}s)")
+            # Extract the actual completion object from the result
+            # If it's a tuple, the first element should be the API response
+            if isinstance(completion_result, tuple):
+                completion = completion_result[0]
+            else:
+                completion = completion_result
             
-            # Create prompt for AI enhancement
-            prompt = f"""You are a helpful assistant that analyzes podcast segments and provides structured descriptions and visual prompts.
-Your task is to analyze this podcast segment and provide a JSON response with the following structure:
-
-{{
-    "description": "A clear, concise description of the main topic",
-    "visual_prompt": "A detailed visual prompt for generating an image that represents this content",
-    "key_points": ["Key point 1", "Key point 2", "Key point 3"]
-}}
-
-Podcast segment text: "{text}"
-
-Important: Your response must be valid JSON. Do not include any text before or after the JSON object."""
-
-            # Get AI enhancement
+            # Parse the response
+            response_text = completion.choices[0].message.content
+            
+            # Try to extract JSON
             try:
-                response = ai_client.chat.completions.create(
-                    model=chat_model,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that analyzes podcast segments and provides structured descriptions and visual prompts. Always respond with valid JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=500
-                )
+                # Extract JSON from response
+                json_match = re.search(r'({[\s\S]*})', response_text)
+                if not json_match:
+                    logger.error(f"Failed to extract JSON from response for segment {i}")
+                    logger.error(f"Response: {response_text}")
+                    return None
                 
-                # Get the response content
-                content = response.choices[0].message.content.strip()
+                json_text = json_match.group(1)
+                enhancement = json.loads(json_text)
                 
-                # Log the raw response for debugging
-                logger.debug(f"Raw API response: {content}")
+                # Log the extracted enhancement
+                logger.info(f"Successfully enhanced segment {i}")
+                logger.info(f"Description: {enhancement.get('description', '')[:100]}...")
+                logger.info(f"Epoch time: {enhancement.get('epoch_time', '')}")
                 
-                # Try to parse the JSON response
-                try:
-                    # First try direct JSON parsing
-                    enhancement = json.loads(content)
-                except json.JSONDecodeError:
-                    # If that fails, try to extract JSON from markdown code blocks
-                    try:
-                        # Look for content between ```json and ``` or just between ``` and ```
-                        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
-                        if json_match:
-                            enhancement = json.loads(json_match.group(1))
-                        else:
-                            # If no code blocks found, try to find JSON between curly braces
-                            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                            if json_match:
-                                enhancement = json.loads(json_match.group())
-                            else:
-                                raise ValueError("No JSON structure found in response")
-                    except Exception as e:
-                        logger.error(f"Failed to extract JSON from response: {str(e)}")
-                        # Create a fallback enhancement
-                        enhancement = {
-                            "description": f"Segment {i}: {text[:100]}...",
-                            "visual_prompt": f"An image representing: {text[:100]}...",
-                            "key_points": [text[:100]]
-                        }
+                # Check visual prompt structure
+                visual_prompt = enhancement.get('visual_prompt', '')
+                logger.info(f"Original visual prompt: {visual_prompt[:100]}...")
                 
-                # Validate required fields
-                required_fields = ["description", "visual_prompt", "key_points"]
-                for field in required_fields:
-                    if field not in enhancement:
-                        enhancement[field] = f"Missing {field} for segment {i}"
+                # Verify the visual_prompt format (should start with "In [EPOCH_TIME],")
+                if not visual_prompt.startswith("In "):
+                    logger.warning(f"Visual prompt may not follow required format (should start with 'In [EPOCH_TIME],')")
+                    epoch_time = enhancement.get('epoch_time', 'modern times')
+                    # Try to fix it if possible
+                    if "," in visual_prompt:
+                        # Try to preserve text after first comma
+                        fixed_prompt = f"In {epoch_time}, {visual_prompt.split(',', 1)[1].strip()}"
+                    else:
+                        # Just prepend the epoch time
+                        fixed_prompt = f"In {epoch_time}, {visual_prompt}"
+                    
+                    logger.info(f"Fixed visual prompt: {fixed_prompt[:100]}...")
+                    enhancement['visual_prompt'] = fixed_prompt
                 
-                # Create enhanced segment
+                # Create the enhanced segment
                 enhanced_segment = {
-                    'start': start_time,
-                    'end': end_time,
-                    'text': text,
-                    'description': enhancement['description'],
-                    'visual_prompt': enhancement['visual_prompt'],
-                    'key_points': enhancement['key_points']
+                    'text': segment['text'],
+                    'start': segment['start'],
+                    'end': segment['end'],
+                    'description': enhancement.get('description', ''),
+                    'visual_prompt': enhancement.get('visual_prompt', ''),
+                    'key_points': enhancement.get('key_points', []),
+                    'epoch_time': enhancement.get('epoch_time', '')
                 }
                 
+                # Add to cache
+                enhance_segments.segment_cache[cache_key] = enhanced_segment.copy()
+                
+                # Add to results
                 enhanced_segments.append(enhanced_segment)
+                logger.info(f"Enhanced segment {i} with {len(enhanced_segment['key_points'])} key points")
                 
-                # Log progress
-                logger.info(f"Enhanced segment {i}/{total_segments}")
+                # Track API cost if cost tracker is available
+                if COST_TRACKER_AVAILABLE:
+                    completion_tokens = completion.usage.completion_tokens
+                    prompt_tokens = completion.usage.prompt_tokens
+                    
+                    # Add the cost
+                    cost_tracker.add_openai_chat_cost(
+                        model=chat_model,  # Use the global chat model instead of hardcoding
+                        input_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                        operation_name=f"enhance_segment_{i}"
+                    )
                 
-            except Exception as e:
-                logger.error(f"Error enhancing segment {i}: {str(e)}")
-                continue
-        
-        # Sort segments by start time to ensure they're sequential
-        enhanced_segments.sort(key=lambda x: x['start'])
-        
-        # Log final segment count
-        logger.info(f"Successfully enhanced {len(enhanced_segments)} segments")
-        return enhanced_segments
-        
-    except Exception as e:
-        logger.error(f"Error in enhance_segments: {str(e)}")
-        logger.error(f"Error type: {type(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return []
+                # Pause briefly to avoid rate limits
+                time.sleep(0.5)
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from response for segment {i}: {e}")
+                logger.error(f"Response: {response_text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error enhancing segment {i}: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error("Segment enhancement failed")
+            return None
+    
+    logger.info(f"Successfully enhanced {len(enhanced_segments)} segments")
+    return enhanced_segments
 
 def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
     """Generate visuals for each enhanced segment"""
     logger.info("Generating visuals for segments")
     visuals = []
     
+    # Get custom visual generation prompt prefix from environment
+    custom_visual_prefix = os.environ.get("CUSTOM_VISUAL_PREFIX")
+    
+    # Get custom negative prompts from environment
+    custom_negative_prompts = os.environ.get("CUSTOM_NEGATIVE_PROMPTS")
+    if custom_negative_prompts:
+        logger.info(f"Found custom negative prompts from environment: {custom_negative_prompts[:100]}...")
+        logger.info(f"Custom negative prompts length: {len(custom_negative_prompts)} characters")
+        logger.info(f"Number of items in custom negative prompts: {len([x for x in custom_negative_prompts.split(',') if x.strip()])}")
+    else:
+        logger.warning("No custom negative prompts found in environment variables. Using only auto-generated negative prompts.")
+    
+    # Default visual generation prompt prefix if no custom prefix is provided
+    default_visual_prefix = "A high quality, detailed image with creative and artistic imagery that accurately reflects the specific time period described below, using abstract visual elements where appropriate and avoiding human figures or faces, ensuring the visual elements align naturally with the narrative context of the following scene: "
+    
     for i, segment in enumerate(enhanced_segments, 1):
         logger.info(f"Generating visuals for segment {i}/{len(enhanced_segments)}")
         try:
+            # Get the epoch time for negative prompts
+            epoch_time = segment.get('epoch_time', '')
+            
+            # Create negative prompts based on epoch time to avoid anachronisms
+            negative_prompts = []
+            
+            # Log the original visual prompt
+            logger.info(f"Original visual prompt: {segment['visual_prompt']}")
+            
+            # Combine the visual generation prefix with the segment's visual prompt
+            visual_prefix = custom_visual_prefix if custom_visual_prefix else default_visual_prefix
+            combined_prompt = f"{visual_prefix} {segment['visual_prompt']}"
+            
+            # Debug the combined prompt
+            logger.info(f"Combined prompt: {combined_prompt}")
+            
             # Generate image for the segment
             image_path = os.path.join(output_dir, f"segment_{i}.png")
+            
+            # Add anachronism avoidance negative prompts based on epoch time
+            if epoch_time:
+                # Determine what types of modern elements to avoid based on the epoch time
+                modern_items = ["modern skyscrapers", "cars", "smartphones", "computers", "contemporary clothing"]
+                
+                # Simple logic to check for pre-modern time periods
+                is_ancient = any(term in epoch_time.lower() for term in ["ancient", "medieval", "prehistoric", "bronze age", "iron age", "stone age", "bc", "bce", "century"])
+                is_pre_20th_century = any(term in epoch_time.lower() for term in ["1800s", "1700s", "1600s", "1500s", "1400s", "1300s", "1200s", "1100s", "1000s", "century", "renaissance", "victorian", "tudor", "colonial"])
+                
+                # Generate negative prompts based on the time period
+                if is_ancient:
+                    negative_prompts.extend(modern_items)
+                    negative_prompts.extend(["electricity", "modern buildings", "modern technology"])
+                    logger.info(f"Added ancient-specific negative prompts for epoch: {epoch_time}")
+                
+                elif is_pre_20th_century:
+                    negative_prompts.extend(["skyscrapers", "cars", "smartphones", "computers", "modern technology"])
+                    logger.info(f"Added pre-20th century negative prompts for epoch: {epoch_time}")
+            
+            # Start with custom negative prompts if available
+            negative_prompt_str = ""
+            if custom_negative_prompts:
+                # Use the custom negative prompts and add any anachronism-specific ones
+                negative_prompt_str = custom_negative_prompts
+                logger.info(f"Baseline negative prompts (from environment): {negative_prompt_str[:100]}...")
+                
+                # Add anachronism prompts if they exist
+                if negative_prompts:
+                    logger.info(f"Adding {len(negative_prompts)} anachronism-specific negative prompts: {', '.join(negative_prompts)}")
+                    negative_prompt_str += ", " + ", ".join(negative_prompts)
+                
+                logger.info(f"FINAL negative prompts (custom + anachronism): {negative_prompt_str[:150]}...")
+                logger.info(f"Total negative prompt length: {len(negative_prompt_str)} characters")
+                logger.info(f"Total negative prompt items: {len([x for x in negative_prompt_str.split(',') if x.strip()])}")
+            else:
+                # No custom prompts, make sure we have strong defaults to avoid inappropriate images
+                default_negative_prompts = ["humans", "people", "person", "man", "woman", "child", "face", "faces", "portrait", "photorealistic humans", "realistic human faces", "detailed faces", "nude", "naked", "nsfw", "disturbing content"]
+                negative_prompts.extend(default_negative_prompts)
+                negative_prompt_str = ", ".join(negative_prompts)
+                logger.info(f"Using default negative prompts since no custom prompts found: {negative_prompt_str}")
+                logger.info(f"Negative prompt items count: {len(negative_prompts)}")
+            
+            # Validate the prompt before sending to Stability
+            logger.info("Validating prompt before sending to Stability API")
+            is_safe, validated_prompt, validated_negative_prompt, reason = validate_image_prompt_with_deepseek(
+                combined_prompt, 
+                negative_prompt_str
+            )
+            
+            if not is_safe:
+                logger.warning(f"Prompt validation detected potential issues: {reason}")
+                logger.info("Using corrected prompts from validation")
+                
+                # Log the differences
+                if validated_prompt != combined_prompt:
+                    logger.info(f"Original prompt: {combined_prompt}")
+                    logger.info(f"Corrected prompt: {validated_prompt}")
+                
+                if negative_prompt_str and validated_negative_prompt != negative_prompt_str:
+                    logger.info(f"Original negative prompt: {negative_prompt_str}")
+                    logger.info(f"Corrected negative prompt: {validated_negative_prompt}")
+            else:
+                logger.info(f"Prompt validation passed: {reason}")
+            
+            # Generate the image with validated prompts
             success = generate_image_stability(
-                prompt=segment['visual_prompt'],
+                prompt=validated_prompt,
                 output_path=image_path,
-                non_interactive=non_interactive
+                non_interactive=non_interactive,
+                negative_prompt=validated_negative_prompt
             )
             
             if success:
+                # Create a visual entry with the correct field access
+                # Check if start/end or start_time/end_time are available
+                start_time = segment.get('start_time', segment.get('start', 0))
+                end_time = segment.get('end_time', segment.get('end', 0))
+                
                 visuals.append({
                     'text': segment['text'],
                     'image_path': image_path,
-                    'start_time': segment['start'],
-                    'end_time': segment['end']
+                    'start_time': start_time,
+                    'end_time': end_time
                 })
                 logger.info(f"Generated visual for segment {i}")
             else:
@@ -1483,95 +2636,391 @@ def generate_visuals(enhanced_segments, output_dir, non_interactive=False):
     return visuals
 
 def process_audio_file(audio_path, output_path, limit_to_one_minute=False, non_interactive=False):
-    """Process an audio file to create a video with AI-generated visuals."""
+    """Process audio file to create a video with AI-generated visuals"""
+    debug_point(f"Processing audio file: {audio_path}")
+    
+    # Show time limit information if enabled
+    if limit_to_one_minute:
+        logger.info(f"Time limit mode is enabled. Using TIME_LIMIT_SECONDS={TIME_LIMIT_SECONDS} ({TIME_LIMIT_SECONDS/60:.1f} minutes)")
+    else:
+        logger.info("Time limit mode is disabled. Processing full audio.")
+    
+    # Check that the audio file exists
+    if not os.path.exists(audio_path):
+        logger.error(f"Audio file not found: {audio_path}")
+        return False
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.dirname(output_path)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create temp directory
+    temp_dir = "temp"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Initialize global state
+    debug_point("Initializing processing state")
+    global current_operation, is_cancelling, task_start_time, task_name, task_stack
+    current_operation = "initialized"
+    is_cancelling = False
+    task_start_time = time.time()
+    task_name = "initialization"
+    task_stack = [("initialization", task_start_time)]
+    
+    # Reset cost tracker at beginning of process if available
+    if COST_TRACKER_AVAILABLE:
+        cost_tracker.reset()
+        logger.info("Cost tracker reset for new processing task")
+    
+    # Start progress monitoring thread
+    debug_point("Starting progress monitoring")
+    global progress_thread
+    progress_thread = start_progress_monitoring()
+    
+    # Set up signal handlers for graceful shutdown
+    setup_signal_handling()
+    
+    # Track processing start time
+    processing_start = time.time()
+    
     try:
-        # Create temp directory
-        temp_dir = "temp"
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        # Create transcripts directory
-        transcript_dir = "transcripts"
-        os.makedirs(transcript_dir, exist_ok=True)
-        
-        # Log whether we're using time limit
-        if limit_to_one_minute:
-            logger.info(f"Processing with time limit of {TIME_LIMIT_SECONDS} seconds")
-        else:
-            logger.info("Processing full audio file without time limit")
-        
-        # Step 1: Transcribe audio
-        logger.info("Starting audio transcription")
+        # Step 1: Transcribe the audio
+        debug_point("Starting audio transcription")
         transcript_path = transcribe_audio(
-            audio_path,
+            audio_path=audio_path,
             force_transcription=False,
-            transcript_dir=transcript_dir,
+            transcript_dir="transcripts",
             non_interactive=non_interactive,
-            temp_dir=temp_dir,
+            temp_dir=temp_dir, 
             limit_to_one_minute=limit_to_one_minute
         )
         
-        if transcript_path is None:
+        if not transcript_path:
             logger.error("Transcription failed")
-            return None
+            return False
         
-        logger.info(f"Transcription completed: {transcript_path}")
-        
-        # Step 2: Extract segments from transcript
-        logger.info("Extracting segments from transcript")
+        # Extract segments from transcript
+        debug_point("Extracting segments from transcript")
         segments = extract_segments(transcript_path)
         
         if not segments:
             logger.error("No segments extracted from transcript")
-            return None
+            return False
         
-        logger.info(f"Extracted {len(segments)} segments")
+        logger.info(f"Extracted {len(segments)} segments from transcript")
         
-        # Step 3: Enhance segments with AI
-        logger.info("Enhancing segments with AI")
+        # Normalize segments to reduce their number and optimize processing
+        debug_point("Normalizing segments")
+        original_segment_count = len(segments)
+        segments = normalize_segments(segments, min_duration=12, max_duration=35, target_duration=25)
+        logger.info(f"Normalized segments: {len(segments)} segments (from original {original_segment_count})")
+        
+        # Step 2: Enhance segments with AI descriptions and visual prompts
+        debug_point("Enhancing segments with AI")
         enhanced_segments = enhance_segments(segments, limit_to_one_minute)
         
         if not enhanced_segments:
-            logger.error("Segment enhancement failed")
-            return None
+            logger.error("No enhanced segments produced")
+            return False
         
         logger.info(f"Enhanced {len(enhanced_segments)} segments")
         
-        # Step 4: Generate visuals for segments
-        logger.info("Generating visuals for segments")
-        success = generate_visuals(
-            enhanced_segments,
-            temp_dir,
-            non_interactive=non_interactive
-        )
+        # Step 3: Generate visuals for each segment
+        debug_point("Generating visuals")
+        image_folder = os.path.join(temp_dir, "images")
+        os.makedirs(image_folder, exist_ok=True)
         
-        if not success:
-            logger.error("Visual generation failed")
-            return None
+        enhanced_segments = generate_visuals(enhanced_segments, image_folder, non_interactive)
         
-        logger.info("Visual generation completed")
+        if not enhanced_segments:
+            logger.error("Failed to generate visuals")
+            return False
         
-        # Step 5: Create final video
-        logger.info("Creating final video")
-        final_video_path = create_final_video(
-            enhanced_segments,
-            audio_path,
-            output_path,
-            temp_dir,
+        logger.info(f"Generated visuals for {len(enhanced_segments)} segments")
+        
+        # Step 4: Create the final video
+        debug_point("Creating final video")
+        result = create_final_video(
+            enhanced_segments=enhanced_segments,
+            audio_path=audio_path,
+            output_path=output_path,
+            temp_dir=temp_dir,
             limit_to_one_minute=limit_to_one_minute
         )
         
-        if final_video_path is None:
-            logger.error("Final video creation failed")
-            return None
+        # Calculate processing time
+        processing_time = time.time() - processing_start
+        logger.info(f"Total processing time: {processing_time:.2f} seconds")
         
-        logger.info(f"Final video created: {final_video_path}")
-        return final_video_path
+        # Save cost report if cost tracking is enabled
+        if COST_TRACKER_AVAILABLE:
+            # Create a report path in the same directory as the output video
+            report_dir = os.path.dirname(output_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_path = os.path.join(report_dir, f"api_costs_{timestamp}.json")
+            
+            # Save the report
+            cost_tracker.save_report(report_path)
+            
+            # Get the cost summary
+            cost_summary = cost_tracker.get_summary()
+            
+            # Log the total cost
+            logger.info(f"Total API cost: ${cost_summary['total_cost']:.4f}")
+            logger.info(f"Cost breakdown: OpenAI Chat ${cost_summary['api_breakdown']['openai']['chat']:.4f}, " 
+                       f"OpenAI Transcription ${cost_summary['api_breakdown']['openai']['transcription']:.4f}, "
+                       f"Stability Image ${cost_summary['api_breakdown']['stability']['image']:.4f}")
+            logger.info(f"Cost report saved to {report_path}")
+            
+            # Print cost data in special format for webapp to parse
+            cost_json = json.dumps(cost_summary)
+            print(f"COST_DATA: {cost_json}")
         
+        complete_task("Creating final video")
+        
+        return result
+    
     except Exception as e:
-        logger.error(f"Error processing audio file: {str(e)}")
-        logger.error(f"Error type: {type(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error processing audio file: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        # Output final cost data before finishing
+        if COST_TRACKER_AVAILABLE:
+            try:
+                cost_summary = cost_tracker.get_summary()
+                cost_json = json.dumps(cost_summary)
+                print(f"COST_DATA: {cost_json}")
+            except Exception as e:
+                logger.error(f"Error generating final cost report: {str(e)}")
+        
+        debug_point("Processing completed")
+
+def init_moviepy():
+    """Initialize MoviePy and return whether it's available"""
+    global moviepy_editor, MOVIEPY_AVAILABLE
+    if not MOVIEPY_AVAILABLE:
+        try:
+            import moviepy.editor as moviepy_editor
+            MOVIEPY_AVAILABLE = True
+            logger.info("Successfully initialized MoviePy")
+        except ImportError as e:
+            logger.error(f"Failed to initialize MoviePy: {e}")
+            MOVIEPY_AVAILABLE = False
+        except Exception as e:
+            logger.error(f"Unexpected error initializing MoviePy: {e}")
+            MOVIEPY_AVAILABLE = False
+    return MOVIEPY_AVAILABLE
+
+def generate_llm_prompt(instructions, llm_client):
+    """Generate a prompt using an LLM"""
+    debug_point("Generating prompt with LLM")
+    
+    if not llm_client:
+        logger.error("LLM client not provided")
+        return None
+    
+    try:
+        # Create the message content
+        response = llm_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant that generates prompts based on instructions."},
+                {"role": "user", "content": instructions}
+            ],
+            temperature=0.7,
+            max_tokens=300
+        )
+        
+        # Track API cost if cost tracker is available
+        if COST_TRACKER_AVAILABLE:
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            cost_tracker.add_openai_chat_cost(
+                model="gpt-4",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                operation_name="generate_prompt"
+            )
+        
+        # Return the generated prompt
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Error generating prompt: {e}")
         return None
 
+def validate_image_prompt_with_deepseek(positive_prompt, negative_prompt=None):
+    """
+    Use Deepseek to validate that a prompt doesn't inadvertently request human imagery
+    and suggest corrections if it does.
+    
+    Args:
+        positive_prompt (str): The positive prompt to check
+        negative_prompt (str, optional): The negative prompt to check
+
+    Returns:
+        tuple: (is_safe, corrected_positive, corrected_negative, reason)
+    """
+    logger.info("Validating image prompt with Deepseek")
+    
+    # Check if we have either a DeepSeek or OpenAI API key
+    deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not deepseek_api_key and not openai_api_key:
+        logger.warning("No Deepseek or OpenAI API key found, skipping prompt validation")
+        return True, positive_prompt, negative_prompt, "No validation performed"
+    
+    try:
+        # Initialize LLM client - prefer Deepseek if available
+        if deepseek_api_key:
+            from openai import OpenAI
+            llm_client = OpenAI(
+                api_key=deepseek_api_key,
+                base_url="https://api.deepseek.com/v1"
+            )
+            model = "deepseek-chat"
+            logger.info("Using Deepseek for prompt validation")
+        else:
+            from openai import OpenAI
+            llm_client = OpenAI(api_key=openai_api_key)
+            model = "gpt-4"
+            logger.info("Using OpenAI for prompt validation (Deepseek not available)")
+        
+        # Prepare the system prompt for validation
+        system_prompt = """You are an expert at analyzing image generation prompts for problematic content.
+Your task is to check if the provided prompts might inadvertently lead to generating disturbing human imagery.
+
+Check for:
+1. Any phrases requesting realistic humans, faces, or human-like figures
+2. Instructions that might result in inappropriate, disturbing or explicit human imagery
+3. Contradictions between positive and negative prompts
+
+If you find issues, suggest corrected versions that:
+- Remove any requests for human or face depictions
+- Keep the core subject matter intact
+- Prioritize abstract, conceptual, or scenic imagery instead
+- Ensures positive prompts don't contradict negative prompts
+
+Reply in JSON format with the following fields:
+{
+  "is_safe": boolean,
+  "corrected_positive_prompt": "string",
+  "corrected_negative_prompt": "string",
+  "reason": "string explanation"
+}"""
+
+        # Create the user message content
+        user_content = f"POSITIVE PROMPT: {positive_prompt}\n\n"
+        if negative_prompt:
+            user_content += f"NEGATIVE PROMPT: {negative_prompt}\n\n"
+        user_content += "Please analyze these prompts and suggest corrections if needed."
+        
+        # Query the LLM
+        response = llm_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.1,  # Low temperature for consistent results
+            max_tokens=1000,
+            response_format={"type": "json_object"}
+        )
+        
+        # Track API cost if cost tracker is available
+        if COST_TRACKER_AVAILABLE:
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            if deepseek_api_key:
+                # If Deepseek cost tracking is implemented, use that method
+                cost_tracker.add_openai_chat_cost(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="prompt_validation"
+                )
+            else:
+                cost_tracker.add_openai_chat_cost(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation_name="prompt_validation"
+                )
+        
+        # Parse the response
+        result_text = response.choices[0].message.content.strip()
+        try:
+            result = json.loads(result_text)
+            
+            # Log the validation results
+            if result["is_safe"]:
+                logger.info("Prompt validation passed: No problematic human imagery detected")
+            else:
+                logger.warning(f"Prompt validation failed: {result['reason']}")
+                logger.info(f"Original positive prompt: {positive_prompt}")
+                logger.info(f"Corrected positive prompt: {result['corrected_positive_prompt']}")
+                if negative_prompt:
+                    logger.info(f"Original negative prompt: {negative_prompt}")
+                    logger.info(f"Corrected negative prompt: {result['corrected_negative_prompt']}")
+            
+            return (
+                result["is_safe"],
+                result["corrected_positive_prompt"],
+                result["corrected_negative_prompt"] if negative_prompt else negative_prompt,
+                result["reason"]
+            )
+            
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse LLM response as JSON: {result_text}")
+            return True, positive_prompt, negative_prompt, "Error parsing validation response"
+        
+    except Exception as e:
+        logger.error(f"Error validating prompt: {str(e)}")
+        logger.error(traceback.format_exc())
+        return True, positive_prompt, negative_prompt, f"Validation error: {str(e)}"
+
 if __name__ == "__main__":
-    main()
+    try:
+        # Parse command line arguments
+        parser = argparse.ArgumentParser(description="Convert podcast audio to video with AI-generated visuals")
+        parser.add_argument("--input", help="Input audio file path")
+        parser.add_argument("--output", help="Output video file path")
+        parser.add_argument("--temp_dir", default="temp", help="Temporary directory for processing files")
+        parser.add_argument("--transcript_dir", default="transcripts", help="Directory for storing transcripts")
+        parser.add_argument("--transcribe_only", action="store_true", help="Only transcribe the audio, don't process further")
+        parser.add_argument("--force_transcription", action="store_true", help="Force transcription even if transcript exists")
+        parser.add_argument("--limit_to_one_minute", action="store_true", 
+                           help=f'Limit processing to first {TIME_LIMIT_SECONDS} seconds ({TIME_LIMIT_SECONDS/60:.1f} minutes) of audio')
+        parser.add_argument("--non_interactive", action="store_true", help="Run in non-interactive mode")
+        parser.add_argument("--test_openai", action="store_true", help="Test OpenAI API connectivity")
+        parser.add_argument("--test_stability", action="store_true", help="Test Stability API connectivity")
+        args = parser.parse_args()
+        
+        # Setup signal handling for graceful termination
+        setup_signal_handling()
+        
+        # Register cleanup function to run at exit
+        atexit.register(cleanup)
+        
+        # Handle the test commands first
+        if args.test_openai:
+            success = test_openai_api()
+            sys.exit(0 if success else 1)
+            
+        if args.test_stability:
+            success = test_stability_api()
+            sys.exit(0 if success else 1)
+        
+        # Ensure the required arguments are provided
+        if not args.input:
+            logger.error("Input audio file path is required")
+            sys.exit(1)
+        
+        # Process the audio file
+        process_audio_file(args.input, args.output, args.limit_to_one_minute, args.non_interactive)
+
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)

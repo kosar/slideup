@@ -4,6 +4,7 @@ import sys
 import time
 import logging
 from pathlib import Path
+from moviepy.editor import ImageClip, AudioFileClip
 
 # Add progress tracking to see where the app is hanging
 def setup_logging():
@@ -26,6 +27,20 @@ def setup_logging():
 def main():
     logger = setup_logging()
     
+    # Debug: Print Python path
+    logger.info("Python path:")
+    for path in sys.path:
+        logger.info(f"  {path}")
+    
+    # Debug: Print MoviePy version and location
+    try:
+        import moviepy.editor
+        logger.info(f"MoviePy version: {moviepy.editor.__version__}")
+        logger.info(f"MoviePy location: {moviepy.editor.__file__}")
+    except Exception as e:
+        logger.error(f"Error importing moviepy: {e}")
+        logger.info("MoviePy import error is non-fatal, continuing with tests...")
+    
     # Path to the test audio file
     test_audio = "test_resources/test_audio.wav"
     audio_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), test_audio)
@@ -39,21 +54,27 @@ def main():
     # Import the main module with timeout protection
     try:
         logger.info("Importing podcast-to-video module")
-        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        logger.info(f"Module directory: {module_dir}")
+        sys.path.append(module_dir)
         
         # Import using the symlink name
         try:
             import podcast_to_video
-        except ImportError:
+            logger.info("Successfully imported podcast_to_video")
+        except ImportError as e:
             # Try to import directly from the file
             import importlib.util
             logger.info("Trying alternate import method")
+            module_path = os.path.join(module_dir, "podcast-to-video.py")
+            logger.info(f"Module path: {module_path}")
             spec = importlib.util.spec_from_file_location(
                 "podcast_to_video", 
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "podcast-to-video.py")
+                module_path
             )
             podcast_to_video = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(podcast_to_video)
+            logger.info("Successfully imported podcast-to-video.py directly")
         
         # Monkey patch the module to track progress
         original_functions = {}

@@ -31,8 +31,27 @@ def main():
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     
     try:
-        # This will import the main module
-        from podcast_to_video import transcribe_audio, validate_audio_file
+        # Import required modules
+        import speech_recognition as sr
+        logger.info("SpeechRecognition module imported successfully")
+        
+        import pocketsphinx
+        logger.info("pocketsphinx module imported successfully")
+        
+        # This will import the main module - fix the import
+        # The correct file name is podcast-to-video.py (with a hyphen)
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        temp_filename = os.path.join(os.path.dirname(os.path.abspath(__file__)), "podcast-to-video.py")
+        
+        # Create a temporary module name without the hyphen
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("podcast_to_video_module", temp_filename)
+        podcast_to_video = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(podcast_to_video)
+        
+        # Now we can access functions from the module
+        transcribe_audio = podcast_to_video.transcribe_audio
+        validate_audio_file = podcast_to_video.validate_audio_file
         
         # Create directories for testing
         temp_dir = "test_temp"
@@ -79,7 +98,7 @@ def main():
             logger.info("Starting transcription test")
             transcript = transcribe_audio(
                 audio_path,
-                force=True,
+                force_transcription=True,
                 transcript_dir=transcript_dir,
                 non_interactive=True,
                 temp_dir=temp_dir
@@ -88,7 +107,7 @@ def main():
             elapsed = time.time() - start_time
             if transcript:
                 logger.info(f"Transcription completed in {elapsed:.2f} seconds")
-                logger.info(f"Transcript has {len(transcript.get('segments', []))} segments")
+                logger.info(f"Transcript file created: {transcript}")
                 
                 # Check for output files
                 expected_srt = str(Path(audio_path).with_suffix('.srt'))
@@ -97,7 +116,14 @@ def main():
                 else:
                     logger.warning(f"SRT file not found at expected location: {expected_srt}")
                 
-                print(f"Transcription successful in {elapsed:.2f} seconds with {len(transcript.get('segments', []))} segments")
+                print(f"Transcription successful in {elapsed:.2f} seconds")
+                # Read and log a sample of the transcript
+                if os.path.exists(transcript):
+                    with open(transcript, 'r') as f:
+                        lines = f.readlines()
+                        sample = ' '.join(lines[2:6]).strip() if len(lines) > 5 else ' '.join(lines).strip()
+                        logger.info(f"Sample transcript: {sample}")
+                        print(f"Sample transcript: {sample}")
             else:
                 logger.error("Transcription returned None")
                 print("Transcription test failed - no transcript returned")

@@ -33,7 +33,6 @@ def check_environment():
     check_package("openai", "OpenAI client library")
     check_package("moviepy", "MoviePy (video editing)")
     check_package("pydub", "PyDub (audio processing)")
-    check_package("stability_sdk", "Stability SDK (optional, for image generation)")
     print()
     
     # Check for external dependencies

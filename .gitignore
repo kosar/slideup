@@ -186,9 +186,12 @@ podcast2video/*.vtt
 podcast2video/cache
 podcast2video/enhanced_podcast.mp4
 podcast-to-video.py
-.openai_keys.env
-podcast2video/.customprompt3.txt
-podcast2video/.customprompt4.txt
-podcast2video/webapp/.DS_Store
-podcast2video/webapp/outputs/
+podcast2video/webapp/temp/
 podcast2video/webapp/uploads/
+podcast2video/webapp/transcripts/
+podcast2video/webapp/outputs/
+.openai*.env
+podcast2video/.customprompt.*
+podcast2video/podcast2video/.customprompt_genimage.md
+podcast2video/.customprompt*.txt
+podcast2video/.customprompt*.txt

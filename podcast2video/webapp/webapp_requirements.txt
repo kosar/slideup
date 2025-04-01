@@ -1,0 +1,110 @@
+Create a Flask web application that serves as a user-friendly interface for the podcast2video Python script. The web app should allow users to upload audio files, configure processing options, customize AI prompts, and view/download generated videos.
+
+## IMPORTANT: Code Location and Understanding
+Before writing any code, thoroughly review the podcast2video.py file located one directory level up from the project directory. This file contains all the core functionality that your Flask app will interface with.
+
+1. The podcast2video.py file is located at "../podcast2video.py" relative to your Flask application
+2. Thoroughly analyze this code to understand:
+   - The command-line arguments it accepts
+   - The core processing functions
+   - The hard-coded prompts used for AI generation
+   - How it handles errors and logging
+   - The dependencies and environment variables it requires
+
+Ensure you understand how to properly import and use this module from your Flask application. Use proper relative or absolute imports to prevent common path-related issues:
+
+```python
+import sys
+import os
+# Add the parent directory to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Now import functions from podcast2video
+from podcast2video import transcribe_audio, enhance_segments, generate_visuals, create_final_video
+```
+
+Core Functionality
+
+Create a clean, modern single-page application with Flask backend
+Allow users to upload audio files (MP3/WAV)
+Provide UI controls for core options in podcast2video.py (especially --limit_to_one_minute and --non_interactive)
+Allow customization of AI prompts that are currently hard-coded in the script
+Display processing status and progress
+Allow users to view and download the final video
+
+Technical Requirements
+
+Use Flask for the backend framework
+Use modern front-end technologies (HTML5, CSS3, JavaScript)
+Implement responsive design with a clean UI
+Handle file uploads securely
+Implement proper error handling
+Add a simple configuration page for API keys
+
+Code Integration
+
+Import and use the existing podcast2video.py functions without modifying core functionality
+Create wrapper functions to adapt CLI functions for web use
+Ensure environment variables are properly loaded and passed
+Extract and make configurable the hard-coded prompts in the script, such as:
+
+The prompt for AI enhancement of segments
+The visual prompt generation instructions
+Any other text prompts used for AI interactions
+
+
+
+Prompt Customization
+Identify and make customizable these key prompts from the original code:
+
+The AI enhancement prompt (used in enhance_segments function)
+The Stability API image generation prompts
+Allow users to customize these with a simple form interface
+Store default values and allow resetting to defaults
+Show examples or templates to help users write effective prompts
+
+Web App Structure (simplified)
+Keep the application simple with just these key files/folders:
+
+app.py: Main Flask application
+templates/: HTML templates
+
+index.html: Upload page and main interface
+config.html: Simple configuration page for API keys and prompts
+
+
+static/: CSS, JS, and other static files
+uploads/: Temporary directory for uploads
+outputs/: Directory for processed videos
+
+Implementation Guidelines
+Flask App
+
+Keep the Flask app simple - no need for Blueprints
+Implement basic error handling and logging
+Focus on file upload handling and process execution
+Store customized prompts in session or simple JSON files
+Properly source and load the .keys_donotcheckin.env file for API keys
+
+Frontend
+
+Use Bootstrap for responsive design
+Use minimal JavaScript for AJAX requests and progress updates
+Create a clean, intuitive interface
+Provide expandable text areas for prompt customization
+
+Key Implementation Considerations
+
+Module importing: Ensure proper importing of podcast2video.py from one directory up
+Long-running processes: Use a simple background task approach
+Progress updates: Implement a basic progress endpoint
+Error handling: Display user-friendly error messages
+Environment setup: Source the .keys_donotcheckin.env file at startup
+Prompt validation: Add basic validation for customized prompts
+
+Deliverables
+
+Simple Flask application code
+Requirements.txt for dependencies
+Setup instructions
+
+Create a minimal, intuitive UI that makes podcast2video.py accessible to users without technical knowledge. Focus on simplicity and reliability rather than advanced features. Ensure that prompt customization is optional - users should be able to use the default prompts if they choose not to customize.
