@@ -186,3 +186,9 @@ podcast2video/*.vtt
 podcast2video/cache
 podcast2video/enhanced_podcast.mp4
 podcast-to-video.py
+.openai_keys.env
+podcast2video/.customprompt3.txt
+podcast2video/.customprompt4.txt
+podcast2video/webapp/.DS_Store
+podcast2video/webapp/outputs/
+podcast2video/webapp/uploads/
