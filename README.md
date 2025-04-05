@@ -5,7 +5,7 @@ A presentation assistant powered by AI that helps you create and improve PowerPo
 1. **Agentic Implementation**: Using CrewAI framework with a Streamlit interface
 2. **Flask Implementation**: Traditional web applications using Flask
 
-![SlideUp Interface](screenshot1)
+![SlideUp Interface](screenshot1.jpg)
 
 ## Repository Structure
 
