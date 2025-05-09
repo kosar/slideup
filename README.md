@@ -62,7 +62,7 @@ slideup/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/kosarjaff/slideup.git
+git clone https://github.com/kosar/slideup.git
 cd slideup
 ```
 
